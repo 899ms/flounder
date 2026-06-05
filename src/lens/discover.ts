@@ -10,6 +10,7 @@ import { normalizeLensPacks, renderLensPacks, renderProjectContext } from "./con
 export const LENS_SYSTEM = `You are the reconnaissance stage of an automated white-hat security audit framework.
 Your job is not to find bugs. Your job is to design project-specific audit lenses so later agents know what to inspect.
 Read the project profile, source excerpts, and reference material. Infer assets, trust boundaries, invariants, attacker capabilities, and specialized failure modes.
+Every lens must be grounded in observed source, corpus, or deterministic profile evidence. Do not invent unobserved frameworks, entrypoints, APIs, manifests, dependencies, or deployment surfaces.
 Return only structured lens packs. Do not include exploit code, credentials, or machine-specific paths.`;
 
 export async function discoverLensPacks(input: {
@@ -85,6 +86,12 @@ Each lens pack must have:
 - auditorAgents: only for custom failure modes or when the project needs more precise guidance than the generic agent
 - enumerationGuidance: instructions for finding checklist items in this project
 - auditGuidance: instructions for auditing those items
+
+Grounding rules:
+- Create lenses only for domains, assets, and trust boundaries visible in the profile, loaded source, configured context, or corpus.
+- If the source set is narrow, design narrow lenses for what is visible. Do not add web/API/dependency/configuration lenses unless those surfaces are loaded or configured.
+- If proof, circuit, constraint-system, verifier, or witness-assignment code is visible, include guidance to inspect source binding: assigned advice/witness cells must be constrained to the intended caller-owned values or input cells, not merely internally consistent.
+- Absence of a manifest, route table, deployment file, or test suite is unknown context unless loaded reference material states it is security-critical.
 
 Hard boundaries:
 - Do not claim any vulnerability.

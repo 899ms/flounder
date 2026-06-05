@@ -51,14 +51,13 @@ export class SourceIndex {
 
   slicesForItem(item: AuditItem): Slice[] {
     const out: Slice[] = [];
-    const direct = parseLocation(item.location);
-    if (direct) {
+    for (const direct of parseLocations(item.location)) {
       const doc = this.findDoc(direct.pathHint);
       if (doc) {
         out.push({
           doc,
-          startLine: Math.max(1, direct.line - 80),
-          endLine: direct.line + 80,
+          startLine: Math.max(1, direct.startLine - 40),
+          endLine: direct.endLine + 40,
           reason: "direct location",
         });
       }
@@ -119,13 +118,34 @@ function fallbackContext(docs: Doc[], budget: number): string {
   return chunks.join("");
 }
 
-function parseLocation(location: string): { pathHint: string; line: number } | undefined {
-  const match = /^(.*?):(\d+)(?:-\d+)?$/.exec(location.trim());
-  if (!match) return undefined;
-  const pathHint = match[1];
-  const line = Number.parseInt(match[2] ?? "", 10);
-  if (!pathHint || !Number.isFinite(line)) return undefined;
-  return { pathHint, line };
+function parseLocations(location: string): Array<{ pathHint: string; startLine: number; endLine: number }> {
+  const ranges: Array<{ pathHint: string; startLine: number; endLine: number }> = [];
+  let activePath: string | undefined;
+
+  for (const rawSegment of location.split(/\s*,\s*/)) {
+    const segment = rawSegment.trim();
+    if (!segment) continue;
+
+    const withPath = /^(.*):\s*(\d+)(?:\s*-\s*(\d+))?$/.exec(segment);
+    const continuation = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(segment);
+    const match = withPath ?? continuation;
+    if (!match) continue;
+
+    const pathHint = withPath ? match[1]?.trim() : activePath;
+    const startLine = Number.parseInt(withPath ? (match[2] ?? "") : (match[1] ?? ""), 10);
+    const rawEnd = Number.parseInt(withPath ? (match[3] ?? "") : (match[2] ?? ""), 10);
+    const endLine = Number.isFinite(rawEnd) ? rawEnd : startLine;
+    if (!pathHint || !Number.isFinite(startLine) || !Number.isFinite(endLine)) continue;
+
+    activePath = pathHint;
+    ranges.push({
+      pathHint,
+      startLine: Math.min(startLine, endLine),
+      endLine: Math.max(startLine, endLine),
+    });
+  }
+
+  return ranges;
 }
 
 function termsForItem(item: AuditItem): string[] {

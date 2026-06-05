@@ -6,6 +6,7 @@
 
 - Audit engine: deterministic TypeScript modules under `src/ingest`, `src/index`, `src/profile`, `src/lens`, `src/seeders`, `src/audit`, `src/verify`, and `src/reports`.
 - Pi integration: thin adapters under `src/llm/pi-ai.ts` and `src/pi/extension.ts`.
+- Optional local fallback: `src/llm/codex-cli.ts` for authenticated Codex CLI environments when pi provider credentials are unavailable.
 
 The audit engine should not depend on pi-coding-agent. This keeps batch runs, CI, web UI, RPC mode, and future coding-agent flows on the same underlying artifacts.
 
@@ -19,8 +20,10 @@ source + corpus
   -> model project reconnaissance / dynamic lens packs
   -> local checklist seeders
   -> LLM enumeration
-  -> checklist
+  -> round 1 checklist
   -> specialized audit trials
+  -> round 2+ model deepening / novel checklist delta
+  -> specialized audit trials for new items
   -> aggregation
   -> independent verification plan
   -> disclosure draft
@@ -28,10 +31,24 @@ source + corpus
 
 Project profile, source index, dynamic lens packs, and local checklist seeders are planning and context mechanisms. They may propose audit questions and routing guidance, but they must not produce bug findings. Findings come only from model-backed audit trials.
 
+`AuditorConfig.localChecklistSeeders` controls whether deterministic seeders contribute checklist items. Normal exploratory runs can keep them enabled for coverage hints. Blind proof runs should disable them so both checklist enumeration and audit findings come from model calls.
+
+## Rounds vs Trials
+
+The framework has two different repetition mechanisms:
+
+- `rounds`: project exploration depth. Round 1 creates the initial checklist. Round 2 and later call a deepening agent that reads prior checklist coverage, audit observations, and ranked findings, then proposes only novel follow-up items.
+- `trials`: per-item stochastic coverage. Each trial audits the same item independently so aggregation can use hit rate and confidence instead of trusting one sample.
+
+This distinction is important. A stronger run should not merely repeat the same checklist. Later rounds must add new `(location, security property, failure mode)` coverage, and the pipeline rejects duplicates using the same normalized item key for all rounds. If a deepening round produces no new items, the run records the no-op and stops instead of replaying prior items.
+
+The deepening stage is still a planning stage. It does not produce findings. It only expands the checklist with source-grounded questions for later audit agents.
+
 ## Agent Roles
 
 - LensDiscoveryAgent: reads the loaded project context and proposes dynamic lens packs for the target's assets, trust boundaries, invariants, attacker capabilities, and domain-specific failure modes.
 - Enumerator: maps code locations, spec statements, security properties, and failure modes.
+- DeepeningAgent: reads prior coverage and audit observations, then proposes novel follow-up checklist items for later rounds.
 - MissingConstraintAuditor: traces witness values to equality/copy/range constraints.
 - BalanceIntegrityAuditor: checks conservation and turnstile boundaries.
 - NullifierAuditor: checks uniqueness of spend markers and replay resistance.
@@ -70,6 +87,8 @@ The extension registers read-only audit tools first. Tools that write tests or r
 
 The command guardrail lives in `src/security/policy.ts` so non-pi integrations can reuse and test the same policy.
 
+Model calls should use pi-ai providers by default. `provider=codex-cli` is an explicit local fallback for validation runs and should not replace pi package integration.
+
 ## Runnable Gates
 
 - `npm run check`: strict TypeScript compile.
@@ -77,7 +96,9 @@ The command guardrail lives in `src/security/policy.ts` so non-pi integrations c
 - `npm run dry-run`: local checklist seeder run against fixtures. It must produce zero findings.
 - `npm run mock-run`: full model-shaped pipeline using deterministic mock LLM.
 - `npm run check:blind-discovery`: blind fixture regression for checklist enumeration.
-- `npm run check:source-discovery -- --source <path>`: opt-in live model assertion that requires audit model calls and a model-produced finding without committing that source.
+- `npm run check:source-discovery -- --source <path>`: opt-in live model assertion that disables local checklist seeders by default, requires an enumeration model call, requires audit model calls, and requires a model-produced finding without committing that source.
+
+Use `--rounds <n>` with the source-discovery gate when evaluating iterative deepening. Round artifacts must show that later coverage came from `deepen_round_<n>` model calls and survived duplicate filtering.
 
 ## Local-Only Verification
 

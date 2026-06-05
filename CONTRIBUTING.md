@@ -25,6 +25,7 @@ npm run verify
 - Put pi-specific code under `src/pi/` and LLM provider adapters under `src/llm/`.
 - Add new audit lenses through `src/agents/registry.ts`.
 - Add local checklist seeders under `src/seeders/`; they may propose audit questions but must not produce findings.
+- Keep multi-round behavior novelty-driven: later rounds should add source-grounded checklist items and must not just replay previous audit items.
 - Keep verification local-only and report-oriented.
 - Preserve structured run artifacts so audits remain explainable and reproducible.
 

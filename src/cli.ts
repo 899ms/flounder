@@ -7,7 +7,7 @@ import { loadCorpus, loadSource } from "./ingest/source.js";
 import { RunLogger } from "./trace/logger.js";
 import { runAudit } from "./audit/runner.js";
 import { aggregate } from "./audit/aggregate.js";
-import { PiAiClient } from "./llm/pi-ai.js";
+import { createLlmClient } from "./llm/client.js";
 import { MockAuditLlmClient } from "./llm/mock.js";
 import { normalizeLensPacks, normalizeProjectContext } from "./lens/context.js";
 
@@ -34,7 +34,7 @@ async function main(argv: string[]): Promise<void> {
     await logger.init();
     const source = await loadSource(cfg.sourcePaths);
     const corpus = await loadCorpus(cfg.corpusPaths);
-    const llm = cfg.dryRun ? undefined : hasFlag(rest, "--mock-llm") ? new MockAuditLlmClient(logger) : new PiAiClient(cfg.provider, logger);
+    const llm = cfg.dryRun ? undefined : hasFlag(rest, "--mock-llm") ? new MockAuditLlmClient(logger) : createLlmClient(cfg, logger);
     const results = await runAudit({ cfg, items: checklist, source, corpus, ...(llm ? { llm } : {}), logger });
     const summary = aggregate(results);
     await logger.artifact("summary.json", summary);
@@ -61,12 +61,17 @@ async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig; verify
   cfg.enumModel = readFlag(args, "--enum-model") ?? readFlag(args, "--model") ?? cfg.enumModel;
   cfg.auditModel = readFlag(args, "--audit-model") ?? readFlag(args, "--model") ?? cfg.auditModel;
   cfg.verifyModel = readFlag(args, "--verify-model") ?? readFlag(args, "--model") ?? cfg.verifyModel;
+  cfg.rounds = readIntFlag(args, "--rounds") ?? cfg.rounds;
+  cfg.maxNewItemsPerRound = readIntFlag(args, "--max-new-items-per-round") ?? cfg.maxNewItemsPerRound;
   cfg.trials = readIntFlag(args, "--trials") ?? cfg.trials;
   cfg.maxWorkers = readIntFlag(args, "--max-workers") ?? cfg.maxWorkers;
+  const maxAuditItems = readIntFlag(args, "--max-items");
+  if (maxAuditItems !== undefined) cfg.maxAuditItems = maxAuditItems;
   cfg.maxTokens = readIntFlag(args, "--max-tokens") ?? cfg.maxTokens;
   cfg.contextCharBudget = readIntFlag(args, "--context-chars") ?? cfg.contextCharBudget;
   if (args.includes("--dry-run")) cfg.dryRun = true;
   if (args.includes("--no-dynamic-lenses")) cfg.dynamicLensDiscovery = false;
+  if (args.includes("--no-local-seeders")) cfg.localChecklistSeeders = false;
   const thinking = readFlag(args, "--thinking");
   if (thinking === "minimal" || thinking === "low" || thinking === "medium" || thinking === "high" || thinking === "xhigh") {
     cfg.thinkingLevel = thinking;
@@ -90,7 +95,14 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
     cfg.verifyModel = raw.model;
   }
   if (typeof raw.trials === "number" && Number.isFinite(raw.trials)) cfg.trials = Math.max(1, Math.floor(raw.trials));
+  if (typeof raw.rounds === "number" && Number.isFinite(raw.rounds)) cfg.rounds = Math.max(1, Math.floor(raw.rounds));
+  const rawMaxNewItemsPerRound = raw.maxNewItemsPerRound ?? raw.max_new_items_per_round;
+  if (typeof rawMaxNewItemsPerRound === "number" && Number.isFinite(rawMaxNewItemsPerRound)) {
+    cfg.maxNewItemsPerRound = Math.max(1, Math.floor(rawMaxNewItemsPerRound));
+  }
   if (typeof raw.maxWorkers === "number" && Number.isFinite(raw.maxWorkers)) cfg.maxWorkers = Math.max(1, Math.floor(raw.maxWorkers));
+  const rawMaxAuditItems = raw.maxAuditItems ?? raw.max_audit_items;
+  if (typeof rawMaxAuditItems === "number" && Number.isFinite(rawMaxAuditItems)) cfg.maxAuditItems = Math.max(1, Math.floor(rawMaxAuditItems));
   if (typeof raw.maxTokens === "number" && Number.isFinite(raw.maxTokens)) cfg.maxTokens = Math.max(1000, Math.floor(raw.maxTokens));
   if (typeof raw.contextCharBudget === "number" && Number.isFinite(raw.contextCharBudget)) {
     cfg.contextCharBudget = Math.max(4000, Math.floor(raw.contextCharBudget));
@@ -109,6 +121,7 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
     cfg.projectContext = normalizeProjectContext(raw.projectContext ?? raw.project_context) ?? cfg.projectContext;
   }
   if (typeof raw.dynamicLensDiscovery === "boolean") cfg.dynamicLensDiscovery = raw.dynamicLensDiscovery;
+  if (typeof raw.localChecklistSeeders === "boolean") cfg.localChecklistSeeders = raw.localChecklistSeeders;
   if (typeof raw.dryRun === "boolean") cfg.dryRun = raw.dryRun;
 }
 
@@ -160,15 +173,20 @@ Usage:
 
 Options:
   --config <file>         JSON config with projectContext, lensPacks, agents, models, paths
-  --provider <name>       pi-ai provider, default openai
+  --provider <name>       pi-ai provider or codex-cli, default openai
   --model <name>          set enum/audit/verify model
   --enum-model <name>     model for checklist enumeration
   --audit-model <name>    model for audit trials
   --verify-model <name>   model for verification planning
+  --rounds <n>            project exploration rounds, default 1
+  --max-new-items-per-round <n>
+                          cap new deepening items per round, default 16
   --trials <n>            independent trials per item, default 4
+  --max-items <n>         cap enumerated audit items for cost-controlled runs
   --thinking <level>      minimal|low|medium|high|xhigh
   --dry-run               no model calls; local checklist seeders only
   --no-dynamic-lenses     disable model-generated project lens packs
+  --no-local-seeders      require checklist items to come from model enumeration
   --mock-llm              run full pipeline with deterministic mock model
 `);
 }

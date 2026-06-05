@@ -34,8 +34,11 @@ export interface AuditorConfig {
   enumModel: string;
   auditModel: string;
   verifyModel: string;
+  rounds: number;
+  maxNewItemsPerRound: number;
   trials: number;
   maxWorkers: number;
+  maxAuditItems?: number;
   maxTokens: number;
   thinkingLevel: "minimal" | "low" | "medium" | "high" | "xhigh";
   contextCharBudget: number;
@@ -44,6 +47,7 @@ export interface AuditorConfig {
   projectContext: ProjectContext;
   lensPacks: AuditLensPackDefinition[];
   dynamicLensDiscovery: boolean;
+  localChecklistSeeders: boolean;
   dryRun: boolean;
 }
 
@@ -57,6 +61,8 @@ export function defaultConfig(): AuditorConfig {
     enumModel: "gpt-5.5",
     auditModel: "gpt-5.5",
     verifyModel: "gpt-5.5",
+    rounds: 1,
+    maxNewItemsPerRound: 16,
     trials: 4,
     maxWorkers: 4,
     maxTokens: 8000,
@@ -67,6 +73,7 @@ export function defaultConfig(): AuditorConfig {
     projectContext: {},
     lensPacks: [],
     dynamicLensDiscovery: true,
+    localChecklistSeeders: true,
     dryRun: false,
   };
 }

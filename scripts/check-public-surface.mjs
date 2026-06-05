@@ -8,7 +8,7 @@ const root = process.cwd();
 const execFileAsync = promisify(execFile);
 const currentSkipDirs = new Set([".git", ".npm-cache", "files", "node_modules", "runs"]);
 const historySkipDirs = new Set([".git", ".npm-cache", "node_modules"]);
-const skipFiles = new Set(["Orchard_Security_Bugv2.pdf", "files.zip"]);
+const skipFiles = new Set();
 const textExtensions = new Set([
   ".adoc",
   ".c",

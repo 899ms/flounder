@@ -13,12 +13,15 @@ The core workflow is:
 3. In live runs, let the model perform project reconnaissance and propose dynamic lens packs.
 4. Enumerate concrete audit items before looking for bugs.
 5. Route each item to built-in or project-specific failure-mode agents.
-6. Run multiple independent model audit trials per item.
-7. Aggregate by severity, hit rate, confidence, and evidence quality.
-8. Verify findings separately, in local sandbox-only tests.
-9. Keep a complete audit trail of prompts, model outputs, artifacts, and events.
+6. Run one or more exploration rounds. Later rounds use prior coverage and audit observations to propose novel follow-up items.
+7. Run multiple independent model audit trials per item.
+8. Aggregate by severity, hit rate, confidence, and evidence quality.
+9. Verify findings separately, in local sandbox-only tests.
+10. Keep a complete audit trail of prompts, model outputs, artifacts, and events.
 
 Only model-backed audit trials produce bug findings. Project profiles, source indexes, dynamic lens packs, and local checklist seeders organize context and propose questions; they do not count as discovery evidence by themselves.
+
+`rounds` and `trials` are separate controls. Rounds deepen project exploration by generating new checklist items from previous coverage gaps. Trials repeat the audit of one item to measure stochastic agreement and reduce one-off model noise. A multi-round run must add novel checklist coverage; it is not a replay of a single pass.
 
 ## Why pi-mono
 
@@ -32,6 +35,9 @@ The framework therefore exposes both:
 
 - a normal CLI: `fsa run ...`
 - a pi package: `package.json` declares `src/pi/extension.ts`, `skills/`, and `prompts/`
+
+LLM calls use `@earendil-works/pi-ai` by default. A local `codex-cli` fallback provider is available for environments where pi provider credentials are unavailable but Codex CLI is authenticated; it is opt-in and not the default path.
+Provider availability is a runtime concern. Do not hard-code assumptions that every model family is available through every pi provider.
 
 ## Install
 
@@ -69,10 +75,25 @@ fsa run \
   --provider openai \
   --model gpt-5.5 \
   --thinking xhigh \
+  --rounds 2 \
   --trials 4
 ```
 
 Artifacts are written under `runs/<target>-<timestamp>/`.
+
+If pi provider credentials are unavailable but local Codex CLI is authenticated, use the fallback provider:
+
+```bash
+fsa run --config ./audit-config.json --provider codex-cli --model gpt-5.5 --thinking xhigh
+```
+
+For cost-controlled exploratory runs, cap checklist size explicitly:
+
+```bash
+fsa run --config ./audit-config.json --max-items 25
+```
+
+The default is uncapped.
 
 ## Project-Specific Lens Packs
 
@@ -143,10 +164,15 @@ npm run check:source-discovery -- \
   --provider openai \
   --model gpt-5.5 \
   --thinking xhigh \
-  --trials 4
+  --trials 4 \
+  --max-items 25
 ```
 
 `check:source-discovery` is intentionally not part of default CI because it requires provider credentials and live model calls. It fails unless an audit model call is recorded and a model-produced finding generates a disclosure report.
+
+For stronger blind-proof runs, this gate disables local checklist seeders by default. The model must first enumerate the matching audit item, then audit it. Use `--allow-local-seeders` only for debugging checklist coverage.
+
+Add `--rounds <n>` to test iterative deepening. Round 2 and later write `round_<n>_deepening_items.json`; the gate can then prove that follow-up coverage came from model reasoning rather than local checklist seeders.
 
 ## Pi Package Usage
 
@@ -156,7 +182,7 @@ Try the package locally from this directory:
 pi -e .
 ```
 
-The extension registers `fsa_run_audit`. It defaults to `dryRun: true`, so the first call only uses local checklist seeders. It also accepts `projectContext`, `lensPacks`, and `dynamicLensDiscovery` parameters for project-specific audits. The extension blocks bash commands that combine public live networks with exploit/broadcast-style operations.
+The extension registers `fsa_run_audit`. It defaults to `dryRun: true`, so the first call only uses local checklist seeders. It also accepts `projectContext`, `lensPacks`, `dynamicLensDiscovery`, `localChecklistSeeders`, `rounds`, `maxNewItemsPerRound`, and `maxAuditItems` parameters for project-specific audits. The extension blocks bash commands that combine public live networks with exploit/broadcast-style operations.
 
 ## Outputs
 
@@ -165,6 +191,8 @@ Each run writes:
 - `checklist.json`: enumerated audit items.
 - `project_profile.json`: deterministic project profile.
 - `lens_packs.json`: configured plus model-generated audit lens packs.
+- `round_<n>_deepening_items.json`: model-generated novel follow-up items for round 2 and later.
+- `round_<n>_audit_results.json`: audit results for one exploration round.
 - `audit_results.json`: per-item, per-trial findings.
 - `summary.json`: ranked finding summary and coverage.
 - `verifications.json`: independent local-only verification notes.

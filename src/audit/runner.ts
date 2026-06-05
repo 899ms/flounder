@@ -16,6 +16,7 @@ export async function runAudit(input: {
   corpus?: Doc[];
   llm?: LlmClient;
   logger: RunLogger;
+  artifactName?: string;
 }): Promise<AuditResult[]> {
   if (input.cfg.dryRun || !input.llm) {
     const dry = input.items.map((item) => ({
@@ -25,7 +26,7 @@ export async function runAudit(input: {
       hitRate: 0,
       trials: [],
     }));
-    await input.logger.artifact("audit_results.json", dry);
+    await input.logger.artifact(input.artifactName ?? "audit_results.json", dry);
     return dry;
   }
 
@@ -41,7 +42,7 @@ export async function runAudit(input: {
       logger: input.logger,
     }),
   );
-  await input.logger.artifact("audit_results.json", results);
+  await input.logger.artifact(input.artifactName ?? "audit_results.json", results);
   return results;
 }
 

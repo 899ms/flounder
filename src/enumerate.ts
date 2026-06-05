@@ -8,20 +8,7 @@ import { runSeeders } from "./seeders/index.js";
 import type { AuditItem, Doc, LlmClient, ProjectProfile } from "./types.js";
 import { extractJsonArray } from "./util/json.js";
 import type { RunLogger } from "./trace/logger.js";
-
-interface RawAuditItem {
-  id?: string;
-  location?: string;
-  securityProperty?: string;
-  security_property?: string;
-  failureMode?: string;
-  failure_mode?: string;
-  why?: string;
-  specRefs?: string[];
-  spec_refs?: string[];
-  attackerControlledInputs?: string[];
-  attacker_controlled_inputs?: string[];
-}
+import { dedupeAuditItems, normalizeAuditItem, type RawAuditItem } from "./items.js";
 
 export async function enumerateAuditItems(input: {
   cfg: AuditorConfig;
@@ -30,9 +17,11 @@ export async function enumerateAuditItems(input: {
   projectProfile?: ProjectProfile;
   llm?: LlmClient;
   logger: RunLogger;
+  round?: number;
 }): Promise<AuditItem[]> {
-  const seeded = runSeeders(input.source);
-  await input.logger.event("seeders_done", { nItems: seeded.length });
+  const round = input.round ?? 1;
+  const seeded = input.cfg.localChecklistSeeders ? runSeeders(input.source).map((item) => ({ ...item, round })) : [];
+  await input.logger.event("seeders_done", { round, enabled: input.cfg.localChecklistSeeders, nItems: seeded.length });
 
   if (input.cfg.dryRun || !input.llm) {
     await input.logger.artifact("checklist.json", seeded);
@@ -59,44 +48,22 @@ export async function enumerateAuditItems(input: {
     thinkingLevel: input.cfg.thinkingLevel,
   });
 
-  const llmItems = extractJsonArray<RawAuditItem>(text).map(normalizeItem).filter((item): item is AuditItem => item !== undefined);
-  const all = dedupe([...seeded, ...llmItems]);
+  const llmItems = extractJsonArray<RawAuditItem>(text).map((item) => normalizeAuditItem(item, round)).filter((item): item is AuditItem => item !== undefined);
+  const deduped = dedupeAuditItems([...seeded, ...llmItems]);
+  const all = limitItems(deduped, input.cfg.maxAuditItems);
+  if (all.length < deduped.length) {
+    await input.logger.event("enumeration_limited", {
+      maxAuditItems: input.cfg.maxAuditItems,
+      before: deduped.length,
+      after: all.length,
+    });
+  }
   await input.logger.artifact("checklist.json", all);
-  await input.logger.event("enumeration_done", { seeded: seeded.length, llm: llmItems.length, total: all.length });
+  await input.logger.event("enumeration_done", { seeded: seeded.length, llm: llmItems.length, deduped: deduped.length, total: all.length });
   return all;
 }
 
-function normalizeItem(raw: RawAuditItem): AuditItem | undefined {
-  const location = raw.location?.trim();
-  const securityProperty = (raw.securityProperty ?? raw.security_property)?.trim();
-  const failureMode = (raw.failureMode ?? raw.failure_mode)?.trim();
-  if (!location || !securityProperty || !failureMode) return undefined;
-  const item: AuditItem = {
-    id: raw.id?.trim() || slug(`${failureMode}-${location}`),
-    location,
-    securityProperty,
-    failureMode: failureMode as AuditItem["failureMode"],
-    why: raw.why?.trim() || "Enumerated by model.",
-  };
-  const specRefs = raw.specRefs ?? raw.spec_refs;
-  const attackerControlledInputs = raw.attackerControlledInputs ?? raw.attacker_controlled_inputs;
-  if (specRefs) item.specRefs = specRefs;
-  if (attackerControlledInputs) item.attackerControlledInputs = attackerControlledInputs;
-  return item;
-}
-
-function dedupe(items: AuditItem[]): AuditItem[] {
-  const seen = new Set<string>();
-  const out: AuditItem[] = [];
-  for (const item of items) {
-    const key = `${item.location}|${item.failureMode}|${item.securityProperty}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(item);
-  }
-  return out.map((item, idx) => ({ ...item, id: item.id || `item-${idx}` }));
-}
-
-function slug(input: string): string {
-  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+function limitItems(items: AuditItem[], maxAuditItems: number | undefined): AuditItem[] {
+  if (typeof maxAuditItems !== "number" || !Number.isFinite(maxAuditItems) || maxAuditItems < 1) return items;
+  return items.slice(0, Math.floor(maxAuditItems));
 }

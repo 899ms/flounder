@@ -15,13 +15,17 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       target: Type.String({ description: "Target name used for run artifacts." }),
       sourcePaths: Type.Array(Type.String(), { description: "Local source files or directories to audit." }),
       corpusPaths: Type.Optional(Type.Array(Type.String(), { description: "Local spec/reference files or directories." })),
-      provider: Type.Optional(Type.String({ description: "pi-ai provider, for example openai or anthropic." })),
+      provider: Type.Optional(Type.String({ description: "pi-ai provider, for example openai; use codex-cli only as an explicit local fallback." })),
       model: Type.Optional(Type.String({ description: "Model id for enum/audit/verify stages." })),
+      rounds: Type.Optional(Type.Number({ description: "Project exploration rounds. Later rounds generate novel follow-up audit items." })),
+      maxNewItemsPerRound: Type.Optional(Type.Number({ description: "Cap new deepening items per round." })),
       trials: Type.Optional(Type.Number({ description: "Independent audit trials per item." })),
+      maxAuditItems: Type.Optional(Type.Number({ description: "Optional cap on enumerated audit items for cost-controlled runs." })),
       outputDir: Type.Optional(Type.String({ description: "Artifact output directory." })),
       projectContext: Type.Optional(Type.Any({ description: "Project-specific assets, threats, invariants, focus areas, and out-of-scope notes." })),
       lensPacks: Type.Optional(Type.Array(Type.Any(), { description: "Project-specific audit lens packs." })),
       dynamicLensDiscovery: Type.Optional(Type.Boolean({ description: "When true in live runs, let the model propose project-specific lens packs before enumeration." })),
+      localChecklistSeeders: Type.Optional(Type.Boolean({ description: "When false, checklist items must come from model enumeration." })),
       dryRun: Type.Optional(Type.Boolean({ description: "When true, run local checklist seeders only and make no model calls." })),
     }),
     async execute(_toolCallId, params) {
@@ -30,12 +34,16 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       cfg.sourcePaths = params.sourcePaths;
       cfg.corpusPaths = params.corpusPaths ?? [];
       cfg.provider = params.provider ?? cfg.provider;
+      cfg.rounds = params.rounds ?? cfg.rounds;
+      cfg.maxNewItemsPerRound = params.maxNewItemsPerRound ?? cfg.maxNewItemsPerRound;
       cfg.trials = params.trials ?? cfg.trials;
+      if (params.maxAuditItems !== undefined) cfg.maxAuditItems = params.maxAuditItems;
       cfg.outputDir = params.outputDir ?? cfg.outputDir;
       cfg.dryRun = params.dryRun ?? true;
       cfg.projectContext = normalizeProjectContext(params.projectContext) ?? cfg.projectContext;
       cfg.lensPacks = normalizeLensPacks(params.lensPacks);
       cfg.dynamicLensDiscovery = params.dynamicLensDiscovery ?? cfg.dynamicLensDiscovery;
+      cfg.localChecklistSeeders = params.localChecklistSeeders ?? cfg.localChecklistSeeders;
       if (params.model) {
         cfg.enumModel = params.model;
         cfg.auditModel = params.model;

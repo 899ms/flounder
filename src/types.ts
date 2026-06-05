@@ -79,6 +79,7 @@ export interface AuditItem {
   specRefs?: string[];
   attackerControlledInputs?: string[];
   seeder?: string;
+  round?: number;
 }
 
 export interface TrialFinding {

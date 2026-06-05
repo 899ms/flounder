@@ -6,11 +6,15 @@
 - External-facing content must be written in English. This includes README files, docs, CLI help, security policy, contribution notes, prompts, package metadata, and generated public reports.
 - Use TypeScript as the default implementation language.
 - Use pi-mono primitives by default for agent/runtime integration, especially `pi-ai` and `pi-coding-agent`. Choose a different framework only when there is a concrete technical reason and document that reason.
+- Keep model/provider selection runtime-configured. Do not assume every model family is available through every pi provider; use `codex-cli` only as an explicit local fallback when the user selects it.
 - Keep the architecture ready for future coding-agent use cases. Separate ingestion, source indexing, checklist enumeration, audit workers, verification, reporting, and security policy guardrails.
 - Prefer typed interfaces, schema validation, deterministic tests, and small extension points over ad hoc agent logic.
 - Treat deterministic project profiles, source indexes, checklist seeders, and lens packs as planning aids only. They may route attention, but they must not produce vulnerability findings.
 - In live audits, prefer a project reconnaissance stage that lets the model propose dynamic lens packs from the target's assets, trust boundaries, invariants, and attacker model before checklist enumeration.
+- Treat `rounds` and `trials` as different mechanisms. Rounds must generate novel checklist coverage from prior observations; trials independently audit one item for stochastic agreement.
+- Later exploration rounds must use duplicate filtering and coverage deltas. Do not call repeated single-pass audits "multi-round" unless they add new source-grounded audit items.
 - Let project-specific configuration add context, lens packs, failure modes, and auditor agents without modifying core code.
+- For blind proof runs, disable deterministic checklist seeders so the model must enumerate the relevant audit item itself before any audit trial can produce a finding.
 
 ## Security And White-Hat Boundaries
 

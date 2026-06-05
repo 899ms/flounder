@@ -61,6 +61,19 @@ function responseFor(tag: string, user: string): string {
     ]);
   }
 
+  if (tag === "deepen_round_2") {
+    return JSON.stringify([
+      {
+        id: "mock-round-2-source-binding",
+        location: "fixtures/halo2_scalar_mul_binding.rs:13-14",
+        securityProperty: "Caller-owned scalar and point values assigned into advice cells must be constrained to the intended source values, not only reused internally.",
+        failureMode: "missing_constraint",
+        why: "Round 2 follows the prior witness-integrity coverage into a neighboring source-binding path that was not checked by the initial checklist.",
+        attackerControlledInputs: ["private witness assignment", "caller-provided scalar or point"],
+      },
+    ]);
+  }
+
   if (tag.startsWith("audit_")) {
     const hasMissingConstraintShape = /assign_advice|missing_constraint|witness advice/i.test(user);
     return JSON.stringify({

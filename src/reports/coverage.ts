@@ -7,6 +7,7 @@ export interface ChecklistCoverage {
   byFailureMode: Partial<Record<FailureMode, number>>;
   bySeeder: Record<string, number>;
   bySourceFile: Record<string, number>;
+  byRound: Record<string, number>;
 }
 
 export interface RunCoverage {
@@ -15,6 +16,7 @@ export interface RunCoverage {
     auditedItems: number;
     itemsWithFinding: number;
     bySeverity: Partial<Record<Severity, number>>;
+    byRound: Record<string, number>;
     averageHitRate: number;
   };
 }
@@ -25,6 +27,7 @@ export function summarizeChecklist(items: AuditItem[]): ChecklistCoverage {
     byFailureMode: countBy(items, (item) => item.failureMode),
     bySeeder: countBy(items, (item) => item.seeder ?? "llm"),
     bySourceFile: countBy(items, (item) => canonicalLocationFile(item.location)),
+    byRound: countBy(items, (item) => String(item.round ?? 1)),
   };
 }
 
@@ -39,6 +42,7 @@ export function summarizeRun(items: AuditItem[], results: AuditResult[]): RunCov
         hits.flatMap((result) => result.trials.filter((trial) => trial.finding).map((trial) => trial.severity)),
         (severity) => severity,
       ),
+      byRound: countBy(results, (result) => String(result.item.round ?? 1)),
       averageHitRate: round(results.reduce((sum, result) => sum + result.hitRate, 0) / Math.max(1, results.length)),
     },
   };

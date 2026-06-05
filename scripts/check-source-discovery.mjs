@@ -20,12 +20,17 @@ cfg.provider = readFlag(args, "--provider") ?? cfg.provider;
 cfg.enumModel = readFlag(args, "--enum-model") ?? readFlag(args, "--model") ?? cfg.enumModel;
 cfg.auditModel = readFlag(args, "--audit-model") ?? readFlag(args, "--model") ?? cfg.auditModel;
 cfg.verifyModel = readFlag(args, "--verify-model") ?? readFlag(args, "--model") ?? cfg.verifyModel;
+cfg.rounds = readIntFlag(args, "--rounds") ?? cfg.rounds;
+cfg.maxNewItemsPerRound = readIntFlag(args, "--max-new-items-per-round") ?? cfg.maxNewItemsPerRound;
 cfg.trials = readIntFlag(args, "--trials") ?? cfg.trials;
+cfg.maxAuditItems = readIntFlag(args, "--max-items") ?? cfg.maxAuditItems;
 cfg.thinkingLevel = readThinkingFlag(args, "--thinking") ?? cfg.thinkingLevel;
 cfg.dryRun = false;
 cfg.dynamicLensDiscovery = !hasFlag(args, "--no-dynamic-lenses");
+cfg.localChecklistSeeders = hasFlag(args, "--allow-local-seeders");
 
 const expectedFailureMode = readFlag(args, "--expect-failure-mode") ?? "missing_constraint";
+const expectedFailureModeRegex = readRegexFlag(args, "--expect-failure-mode-regex");
 const expectedLocation = readRegexFlag(args, "--expect-location-regex");
 const expectedEvidence = readRegexFlag(args, "--expect-evidence-regex") ?? /(constraint|bound|bind|advice|witness|source|input)/i;
 const minimumSeverity = readFlag(args, "--expect-min-severity") ?? readFlag(args, "--expect-severity") ?? "high";
@@ -33,14 +38,19 @@ const minimumSeverity = readFlag(args, "--expect-min-severity") ?? readFlag(args
 const result = await runPipeline(cfg);
 const calls = await readdir(path.join(result.runDir, "calls"));
 const auditCalls = calls.filter((file) => /_audit_/.test(file));
+const enumerateCalls = calls.filter((file) => /_enumerate\.json$/.test(file));
+if (enumerateCalls.length === 0) {
+  throw new Error("No enumeration model call was recorded; checklist generation did not run as model reasoning.");
+}
 if (auditCalls.length === 0) {
   throw new Error("No audit model calls were recorded; live model reasoning did not run.");
 }
 
 const summary = JSON.parse(await readFile(path.join(result.runDir, "summary.json"), "utf8"));
+const checklist = JSON.parse(await readFile(path.join(result.runDir, "checklist.json"), "utf8"));
 const findings = Array.isArray(summary.findings) ? summary.findings : [];
 const finding = findings.find((item) => {
-  if (item.failureMode !== expectedFailureMode) return false;
+  if (expectedFailureModeRegex ? !expectedFailureModeRegex.test(item.failureMode) : item.failureMode !== expectedFailureMode) return false;
   if (!atLeastSeverity(item.severity, minimumSeverity)) return false;
   if (expectedLocation && !expectedLocation.test(item.location)) return false;
   const evidenceText = [item.title, item.description, item.evidence, item.fix].join("\n");
@@ -48,7 +58,13 @@ const finding = findings.find((item) => {
 });
 
 if (!finding) {
-  throw new Error(`No live model finding matched failureMode=${expectedFailureMode} minSeverity=${minimumSeverity}.`);
+  const failureModeLabel = expectedFailureModeRegex ? `/${expectedFailureModeRegex.source}/i` : expectedFailureMode;
+  throw new Error(`No live model finding matched failureMode=${failureModeLabel} minSeverity=${minimumSeverity}.`);
+}
+
+const checklistItem = Array.isArray(checklist) ? checklist.find((item) => item.id === finding.id) : undefined;
+if (!cfg.localChecklistSeeders && checklistItem?.seeder) {
+  throw new Error(`Matched finding came from local checklist seeder '${checklistItem.seeder}', not model enumeration.`);
 }
 
 const report = await readFile(path.join(result.runDir, `report_${finding.id}.md`), "utf8");

@@ -82,7 +82,9 @@ test("mock pipeline runs enumerate, audit, verify, and report end to end", async
     "fixtures/halo2_scalar_mul_binding.rs",
   ]);
 
-  const report = await readFile(path.join(result.runDir, "report_halo2-missing-constraint-1.md"), "utf8");
+  const firstFindingId = result.summary.findings[0].id;
+  const reportName = `report_${firstFindingId}.md`;
+  const report = await readFile(path.join(result.runDir, reportName), "utf8");
   assert.match(report, /Security disclosure/);
   assert.match(report, /local, isolated environment only/i);
 
@@ -92,11 +94,63 @@ test("mock pipeline runs enumerate, audit, verify, and report end to end", async
     "checklist_coverage.json",
     "run_coverage.json",
     "events.jsonl",
-    "report_halo2-missing-constraint-1.md",
+    reportName,
   ]) {
     const body = await readFile(path.join(result.runDir, artifact), "utf8");
     assertNoLocalAbsolutePath(body, artifact, [root, out]);
   }
+});
+
+test("model-only mode requires checklist items from model enumeration", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-model-only-"));
+  const cfg = defaultConfig();
+  cfg.targetName = "test-model-only";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 2;
+  cfg.localChecklistSeeders = false;
+
+  const result = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 1 });
+  assert.equal(result.summary.coverage.itemsTotal, 1);
+  assert.equal(result.summary.coverage.itemsWithFinding, 1);
+
+  const checklist = JSON.parse(await readFile(path.join(result.runDir, "checklist.json"), "utf8"));
+  assert.equal(checklist.length, 1);
+  assert.equal("seeder" in checklist[0], false);
+  assert.equal(checklist[0].why, "Mock enumeration item used to test end-to-end model-driven audit flow.");
+
+  const calls = await readdir(path.join(result.runDir, "calls"));
+  assert.ok(calls.some((file) => /_discover_lenses\.json$/.test(file)));
+  assert.ok(calls.some((file) => /_enumerate\.json$/.test(file)));
+  assert.ok(calls.some((file) => /_audit_/.test(file)));
+});
+
+test("multi-round mode deepens with novel follow-up checklist items", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-rounds-"));
+  const cfg = defaultConfig();
+  cfg.targetName = "test-rounds";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.rounds = 2;
+  cfg.localChecklistSeeders = false;
+
+  const result = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 1 });
+  assert.equal(result.summary.coverage.itemsTotal, 2);
+  assert.equal(result.summary.coverage.itemsWithFinding, 2);
+
+  const checklist = JSON.parse(await readFile(path.join(result.runDir, "checklist.json"), "utf8"));
+  assert.deepEqual(checklist.map((item) => item.round), [1, 2]);
+  assert.equal(new Set(checklist.map((item) => `${item.location}|${item.failureMode}|${item.securityProperty}`)).size, 2);
+
+  const deepening = JSON.parse(await readFile(path.join(result.runDir, "round_2_deepening_items.json"), "utf8"));
+  assert.equal(deepening.accepted.length, 1);
+  assert.equal(deepening.accepted[0].id, "mock-round-2-source-binding");
+
+  const calls = await readdir(path.join(result.runDir, "calls"));
+  assert.ok(calls.some((file) => /_deepen_round_2\.json$/.test(file)));
+  await stat(path.join(result.runDir, "round_1_audit_results.json"));
+  await stat(path.join(result.runDir, "round_2_audit_results.json"));
 });
 
 function assertNoLocalAbsolutePath(body, label, forbiddenRoots) {
