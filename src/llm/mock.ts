@@ -75,7 +75,7 @@ function responseFor(tag: string, user: string): string {
     ]);
   }
 
-  if (tag === "deepen_round_2") {
+  if (tag === "deepen_round_2" || tag === "deepen_round_2_breadth") {
     return JSON.stringify([
       {
         id: "mock-round-2-enforcement-edge",
@@ -84,6 +84,19 @@ function responseFor(tag: string, user: string): string {
         failureMode: "missing_constraint",
         why: "Round 2 follows prior coverage into a neighboring data-flow edge that was not checked by the initial checklist.",
         attackerControlledInputs: ["private values used by the checked computation"],
+      },
+    ]);
+  }
+
+  if (tag === "deepen_round_2_depth") {
+    return JSON.stringify([
+      {
+        id: "mock-round-2-proof-obligation",
+        location: "fixtures/halo2_missing_constraint.rs:5-9",
+        securityProperty: "The candidate missing-constraint hypothesis must be refuted or confirmed by checking the exact enforcement edge used by downstream logic.",
+        failureMode: "missing_constraint",
+        why: "Depth strategy follows the top candidate into the cheapest source-backed proof obligation instead of broadening to another module.",
+        attackerControlledInputs: ["private value assignment"],
       },
     ]);
   }

@@ -6,7 +6,7 @@
 
 - Audit engine: deterministic TypeScript modules under `src/ingest`, `src/index`, `src/profile`, `src/learn`, `src/lens`, `src/seeders`, `src/audit`, `src/verify`, and `src/reports`.
 - Pi integration: thin adapters under `src/llm/pi-ai.ts` and `src/pi/extension.ts`.
-- Optional local fallback: `src/llm/codex-cli.ts` for authenticated Codex CLI environments when pi provider credentials are unavailable.
+- Optional local fallbacks: `src/llm/codex-cli.ts` for authenticated Codex CLI environments and `src/llm/claude-code.ts` for authenticated Claude Code environments. These fallbacks do not route through pi-ai.
 
 The audit engine should not depend on pi-coding-agent. This keeps batch runs, CI, web UI, RPC mode, and future coding-agent flows on the same underlying artifacts.
 
@@ -28,7 +28,9 @@ flowchart TD
 
   subgraph Engine["Audit Engine"]
     INGEST["Ingest and path sanitization"]
-    INDEX["SourceIndex and structural retrieval"]
+    RESUME["Resume state loader"]
+    INDEX["SourceIndex structural retrieval"]
+    QMD["Optional QMD semantic retrieval"]
     PROFILE["Deterministic project profile"]
     LEARN["Model initialization learning"]
     LENS["Model reconnaissance and dynamic lens packs"]
@@ -46,18 +48,22 @@ flowchart TD
   subgraph Providers["Model Providers"]
     PIAI["pi-ai providers"]
     CODEX["codex-cli fallback"]
+    CLAUDE["claude-code fallback"]
     MOCK["Mock LLM for CI"]
   end
 
   subgraph Safety["Safety and Hygiene"]
     POLICY["Command safety policy"]
     PUBLIC["Public-surface scan"]
-    TRACE["Events, calls, and artifacts"]
+    TRACE["Events, calls, context traces, artifacts"]
   end
 
   CLI --> INGEST
   PI --> INGEST
   LIB --> INGEST
+  CLI --> RESUME
+  PI --> RESUME
+  LIB --> RESUME
   SRC --> INGEST
   CORPUS --> INGEST
   CFG --> PROFILE
@@ -65,6 +71,9 @@ flowchart TD
   CFG --> LENS
   CFG --> ENUM
   INGEST --> INDEX
+  INGEST --> QMD
+  RESUME --> DEEPEN
+  RESUME --> AGG
   INGEST --> PROFILE
   INDEX --> LEARN
   PROFILE --> LEARN
@@ -75,6 +84,8 @@ flowchart TD
   LEARN --> AUDITN
   LEARN --> VERIFY
   INDEX --> LENS
+  QMD -. optional supplement .-> AUDIT1
+  QMD -. optional supplement .-> AUDITN
   PROFILE --> LENS
   LENS --> ENUM
   INDEX --> ENUM
@@ -99,6 +110,12 @@ flowchart TD
   CODEX -. explicit fallback .-> AUDIT1
   CODEX -. explicit fallback .-> DEEPEN
   CODEX -. explicit fallback .-> VERIFY
+  CLAUDE -. explicit fallback .-> LEARN
+  CLAUDE -. explicit fallback .-> LENS
+  CLAUDE -. explicit fallback .-> ENUM
+  CLAUDE -. explicit fallback .-> AUDIT1
+  CLAUDE -. explicit fallback .-> DEEPEN
+  CLAUDE -. explicit fallback .-> VERIFY
   MOCK -. tests .-> LEARN
   MOCK -. tests .-> LENS
   MOCK -. tests .-> ENUM
@@ -113,7 +130,7 @@ flowchart TD
 ```text
 source + corpus
   -> ingest
-  -> source index / retrieval
+  -> source index / optional QMD retrieval
   -> deterministic project profile
   -> model initialization learning notes
   -> model project reconnaissance / dynamic lens packs
@@ -145,6 +162,18 @@ This distinction is important. A stronger run should not merely repeat the same 
 
 The deepening stage is still a planning stage. It does not produce findings. It only expands the checklist with source-grounded questions for later audit agents.
 
+`--resume-run <dir>` and `--resume-last` append additional rounds to an existing run. Resume mode loads prior `checklist.json`, `audit_results.json`, `lens_packs.json`, and `project_learning.json`, then starts at the next round number. If a run fails before writing cumulative `audit_results.json`, resume falls back to completed `round_<n>_audit_results.json` artifacts. If a failed run already produced `round_<n>_deepening_items.json` for the next incomplete round, resume audits those pending items instead of spending another model call to regenerate them. In normal mode, `--rounds <n>` means "run n total rounds from scratch"; in resume mode, `--rounds <n>` means "append n more rounds."
+
+The deepening strategy is explicit:
+
+- `breadth`: bounded breadth expansion across new modules, trust boundaries, invariants, and unexamined data-flow edges.
+- `depth`: bounded depth expansion around top candidates and skeptical observations. It produces follow-up audit items that can confirm, refute, or narrow hypotheses through source tracing, caller/callee dominance checks, counterexample conditions, and local verification obligations.
+- `hybrid`: the default. The planner splits each later-round item budget across breadth and depth branches, then deduplicates the combined item set. If prior findings exist, depth receives about half the budget. If no findings exist, breadth receives most of the budget while depth still gets a smaller near-miss analysis slice when enough budget is available.
+
+This makes the default policy a beam-search style audit: keep expanding coverage while preserving a scored queue of promising hypotheses for deeper scrutiny. It avoids two failure modes: pure breadth that never proves anything deeply, and pure depth that overfits early false positives.
+
+Near-miss analysis is a planning heuristic, not a detector. It queues no-findings that established only a local invariant, selector edge, caller/callee boundary, or adjacent flow, then asks the next planner to inspect the next source-backed edge. The model still has to produce and audit a novel checklist item before a finding exists.
+
 ## Agent Roles
 
 - ProjectLearningAgent: reads loaded source and reference material, then writes source-backed planning notes without claiming vulnerabilities.
@@ -169,6 +198,17 @@ Project-specific customization has two layers:
 
 Live runs enable `projectLearning` and `dynamicLensDiscovery` by default. Project learning writes `project_learning.json`; lens discovery writes `lens_packs.json`. Both are normalized, bounded, reviewable planning artifacts, not findings.
 
+## Context Retrieval Quality
+
+Audit prompts are intentionally bounded, so recall quality is part of audit correctness. The retrieval layer has two tiers:
+
+- Deterministic `SourceIndex` retrieval is always enabled. It includes exact `file:line` ranges, semicolon-separated multi-file ranges, nearby source windows, same-file structural context, and referenced helper definitions found in the direct context.
+- Optional `source-index+qmd` retrieval asks a locally installed QMD index for semantic matches and maps returned paths back to the already ingested source documents. QMD augments structural retrieval; it does not replace direct location or call-reference slices. Runs can pass `qmdCollections` or `--qmd-collection` to keep retrieval scoped to the target repository or corpus collection; this improves recall quality and avoids unrelated local collections.
+
+Every non-dry audit round writes `round_<n>_context_retrieval.json`. Each entry records the item id, retrieval mode, included slices, line ranges, reasons, budgets, truncation status, QMD collection scope, and QMD availability or hit metadata. These traces are first-class debugging artifacts: if a model returns "needs more context", the next engineering step is to inspect whether the trace omitted the requested implementation, trait, constructor, test, or spec section.
+
+Retrieval is not discovery evidence. It can only provide context to model-backed audit trials. A finding must still come from a model trial grounded in the retrieved source.
+
 ## Local Seeder Regression Gate
 
 `npm run check:blind-discovery` runs the framework against a neutral fixture. The fixture does not name a target protocol, impact, or expected bug. The gate passes only if local checklist generation produces a generic missing-constraint audit item from source structure alone.
@@ -189,7 +229,7 @@ The extension registers read-only audit tools first. Tools that write tests or r
 
 The command guardrail lives in `src/security/policy.ts` so non-pi integrations can reuse and test the same policy.
 
-Model calls should use pi-ai providers by default. `provider=codex-cli` is an explicit local fallback for validation runs and should not replace pi package integration.
+Model calls should use pi-ai providers by default. `provider=codex-cli` and `provider=claude-code` are explicit local CLI fallbacks for validation runs and should not replace pi package integration. The Claude Code fallback invokes Claude Code directly; it does not call Claude through pi. CLI fallbacks run in temporary non-interactive contexts with tool access disabled where supported. Individual provider failures are recorded as trial-level model errors so the run can finish and be resumed.
 
 ## Runnable Gates
 

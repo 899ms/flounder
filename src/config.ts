@@ -1,4 +1,4 @@
-import type { AuditLensPackDefinition, AuditorAgentDefinition, FailureMode, ProjectContext } from "./types.js";
+import type { AuditLensPackDefinition, AuditorAgentDefinition, ContextRetrievalMode, ExplorationStrategy, FailureMode, ProjectContext } from "./types.js";
 import { auditorAgentsFromLensPacks } from "./lens/context.js";
 
 export const DEFAULT_FAILURE_MODES: FailureMode[] = [
@@ -35,6 +35,7 @@ export interface AuditorConfig {
   auditModel: string;
   verifyModel: string;
   rounds: number;
+  explorationStrategy: ExplorationStrategy;
   maxNewItemsPerRound: number;
   trials: number;
   maxWorkers: number;
@@ -42,6 +43,12 @@ export interface AuditorConfig {
   maxTokens: number;
   thinkingLevel: "minimal" | "low" | "medium" | "high" | "xhigh";
   contextCharBudget: number;
+  contextRetrieval: ContextRetrievalMode;
+  qmdCommand: string;
+  qmdLimit: number;
+  qmdMinScore: number;
+  qmdTimeoutMs: number;
+  qmdCollections: string[];
   failureModes: FailureMode[];
   auditorAgents: AuditorAgentDefinition[];
   projectContext: ProjectContext;
@@ -63,12 +70,19 @@ export function defaultConfig(): AuditorConfig {
     auditModel: "gpt-5.5",
     verifyModel: "gpt-5.5",
     rounds: 1,
+    explorationStrategy: "hybrid",
     maxNewItemsPerRound: 16,
     trials: 4,
     maxWorkers: 4,
     maxTokens: 8000,
     thinkingLevel: "xhigh",
     contextCharBudget: 120_000,
+    contextRetrieval: "source-index",
+    qmdCommand: "qmd",
+    qmdLimit: 6,
+    qmdMinScore: 0.25,
+    qmdTimeoutMs: 60_000,
+    qmdCollections: [],
     failureModes: DEFAULT_FAILURE_MODES,
     auditorAgents: [],
     projectContext: {},

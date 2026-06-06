@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { AuditorConfig } from "./config.js";
 import { aggregate } from "./audit/aggregate.js";
 import { runAudit } from "./audit/runner.js";
@@ -12,8 +13,10 @@ import { profileProject } from "./profile/project.js";
 import { renderDisclosure } from "./reports/disclosure.js";
 import { summarizeChecklist, summarizeRun, summarizeSourceIndex } from "./reports/coverage.js";
 import { deepenAuditItems } from "./rounds/deepen.js";
+import { writeLastRunPointer } from "./trace/last-run.js";
 import { RunLogger } from "./trace/logger.js";
-import type { AuditResult, AuditSummary, LlmClient } from "./types.js";
+import { loadResumedRunState } from "./trace/run-state.js";
+import type { AuditItem, AuditLensPackDefinition, AuditResult, AuditSummary, LlmClient, ProjectLearning } from "./types.js";
 import { publicPath } from "./util/paths.js";
 import { verifyTop } from "./verify/planner.js";
 
@@ -22,9 +25,15 @@ export interface PipelineResult {
   summary: AuditSummary;
 }
 
-export async function runPipeline(cfg: AuditorConfig, options: { verifyTopK?: number; llm?: LlmClient } = {}): Promise<PipelineResult> {
-  const logger = new RunLogger(cfg.outputDir, cfg.targetName);
+export async function runPipeline(
+  cfg: AuditorConfig,
+  options: { verifyTopK?: number; llm?: LlmClient; resumeRunDir?: string } = {},
+): Promise<PipelineResult> {
+  const resumed = options.resumeRunDir ? await loadResumedRunState(options.resumeRunDir) : undefined;
+  const logger = new RunLogger(cfg.outputDir, cfg.targetName, new Date(), resumed ? { runDir: resumed.runDir } : {});
   await logger.init();
+  await writeLastRunPointer(path.dirname(logger.runDir), logger.runDir, cfg.targetName);
+  const requestedRounds = Math.max(1, Math.floor(cfg.rounds));
   await logger.event("run_start", {
     target: cfg.targetName,
     sourcePaths: cfg.sourcePaths.map((sourcePath) => publicPath(sourcePath)),
@@ -33,12 +42,14 @@ export async function runPipeline(cfg: AuditorConfig, options: { verifyTopK?: nu
     enumModel: cfg.enumModel,
     auditModel: cfg.auditModel,
     verifyModel: cfg.verifyModel,
-    rounds: cfg.rounds,
+    rounds: requestedRounds,
+    explorationStrategy: cfg.explorationStrategy,
     trials: cfg.trials,
     projectLearning: cfg.projectLearning,
     dynamicLensDiscovery: cfg.dynamicLensDiscovery,
     localChecklistSeeders: cfg.localChecklistSeeders,
     dryRun: cfg.dryRun,
+    resume: resumed ? { completedRounds: resumed.completedRounds, additionalRounds: requestedRounds } : false,
   });
 
   const corpus = await loadCorpus(cfg.corpusPaths);
@@ -53,37 +64,72 @@ export async function runPipeline(cfg: AuditorConfig, options: { verifyTopK?: nu
   if (llm && "setLogger" in llm && typeof llm.setLogger === "function") {
     llm.setLogger(logger);
   }
-  const projectLearning = await learnProject({ cfg, corpus, source, projectProfile, ...(llm ? { llm } : {}), logger });
-  const lensPacks = await discoverLensPacks({ cfg, corpus, source, projectProfile, projectLearning, ...(llm ? { llm } : {}), logger });
-  const runCfg = {
-    ...cfg,
-    lensPacks,
-    projectContext: mergeProjectContexts([cfg.projectContext, ...lensPacks.map((pack) => pack.projectContext)]),
-  };
-  const items = await enumerateAuditItems({ cfg: runCfg, corpus, source, projectProfile, projectLearning, ...(llm ? { llm } : {}), logger, round: 1 });
-  await logger.artifact("checklist_coverage.json", summarizeChecklist(items));
-  const results: AuditResult[] = [];
-  const rounds = Math.max(1, Math.floor(runCfg.rounds));
 
-  for (let round = 1; round <= rounds; round += 1) {
+  let projectLearning: ProjectLearning | undefined;
+  let lensPacks: AuditLensPackDefinition[];
+  let items: AuditItem[];
+  let results: AuditResult[];
+  let firstRound: number;
+  let lastRound: number;
+
+  if (resumed) {
+    projectLearning = resumed.projectLearning;
+    lensPacks = mergeLensPacks(resumed.lensPacks, cfg.lensPacks);
+    items = [...resumed.items];
+    results = [...resumed.results];
+    firstRound = resumed.completedRounds + 1;
+    lastRound = resumed.completedRounds + requestedRounds;
+    await logger.artifact("resume_state.json", {
+      resumedRun: basename(resumed.runDir),
+      completedRounds: resumed.completedRounds,
+      additionalRounds: requestedRounds,
+      existingItems: items.length,
+      existingAuditResults: results.length,
+      nextRound: firstRound,
+      pendingRoundItems: resumed.pendingRoundItems?.length ?? 0,
+    });
+    await logger.event("resume_loaded", {
+      completedRounds: resumed.completedRounds,
+      additionalRounds: requestedRounds,
+      existingItems: items.length,
+      existingAuditResults: results.length,
+      nextRound: firstRound,
+      pendingRoundItems: resumed.pendingRoundItems?.length ?? 0,
+    });
+  } else {
+    projectLearning = await learnProject({ cfg, corpus, source, projectProfile, ...(llm ? { llm } : {}), logger });
+    lensPacks = await discoverLensPacks({ cfg, corpus, source, projectProfile, projectLearning, ...(llm ? { llm } : {}), logger });
+    const enumCfg = withLensPacks(cfg, lensPacks);
+    items = await enumerateAuditItems({ cfg: enumCfg, corpus, source, projectProfile, projectLearning, ...(llm ? { llm } : {}), logger, round: 1 });
+    results = [];
+    firstRound = 1;
+    lastRound = requestedRounds;
+    await logger.artifact("checklist_coverage.json", summarizeChecklist(items));
+  }
+
+  const runCfg = withLensPacks(cfg, lensPacks);
+
+  for (let round = firstRound; round <= lastRound; round += 1) {
     await logger.event("round_start", { round });
     const roundItems =
       round === 1
         ? items.filter((item) => (item.round ?? 1) === 1)
-        : await deepenAuditItems({
-            cfg: runCfg,
-            corpus,
-            source,
-            projectProfile,
-            projectLearning,
-            existingItems: items,
-            results,
-            round,
-            ...(llm ? { llm } : {}),
-            logger,
-          });
+        : resumed?.pendingRoundItems && round === firstRound
+          ? await loadPendingRoundItems({ logger, round, items: resumed.pendingRoundItems })
+          : await deepenAuditItems({
+              cfg: runCfg,
+              corpus,
+              source,
+              projectProfile,
+              ...(projectLearning ? { projectLearning } : {}),
+              existingItems: items,
+              results,
+              round,
+              ...(llm ? { llm } : {}),
+              logger,
+            });
 
-    if (round > 1) items.push(...roundItems);
+    if (round > 1) items.push(...itemsNotAlreadyPresent(items, roundItems));
     if (roundItems.length === 0) {
       await logger.event("round_done", { round, newItems: 0, auditedItems: 0 });
       break;
@@ -94,7 +140,7 @@ export async function runPipeline(cfg: AuditorConfig, options: { verifyTopK?: nu
       items: roundItems,
       source,
       corpus,
-      projectLearning,
+      ...(projectLearning ? { projectLearning } : {}),
       ...(llm ? { llm } : {}),
       logger,
       artifactName: `round_${round}_audit_results.json`,
@@ -115,7 +161,7 @@ export async function runPipeline(cfg: AuditorConfig, options: { verifyTopK?: nu
       cfg: runCfg,
       findings: summary.findings,
       source,
-      projectLearning,
+      ...(projectLearning ? { projectLearning } : {}),
       ...(llm ? { llm } : {}),
       logger,
       topK: options.verifyTopK ?? 3,
@@ -127,5 +173,41 @@ export async function runPipeline(cfg: AuditorConfig, options: { verifyTopK?: nu
   }
 
   await logger.event("run_done", { findings: summary.findings.length });
+  await writeLastRunPointer(path.dirname(logger.runDir), logger.runDir, cfg.targetName);
   return { runDir: logger.runDir, summary };
+}
+
+function mergeLensPacks(existing: AuditLensPackDefinition[], configured: AuditLensPackDefinition[]): AuditLensPackDefinition[] {
+  const out = new Map<string, AuditLensPackDefinition>();
+  for (const pack of [...existing, ...configured]) {
+    out.set(pack.id, pack);
+  }
+  return [...out.values()];
+}
+
+async function loadPendingRoundItems(input: { logger: RunLogger; round: number; items: AuditItem[] }): Promise<AuditItem[]> {
+  const items = input.items.map((item) => ({ ...item, round: input.round }));
+  await input.logger.event("pending_round_loaded", { round: input.round, items: items.length });
+  return items;
+}
+
+function itemsNotAlreadyPresent(existing: AuditItem[], next: AuditItem[]): AuditItem[] {
+  const keys = new Set(existing.map(itemIdentity));
+  return next.filter((item) => !keys.has(itemIdentity(item)));
+}
+
+function itemIdentity(item: AuditItem): string {
+  return [item.round ?? 1, item.id, item.location, item.failureMode, item.securityProperty].join("\u0000");
+}
+
+function withLensPacks(cfg: AuditorConfig, lensPacks: AuditLensPackDefinition[]): AuditorConfig {
+  return {
+    ...cfg,
+    lensPacks,
+    projectContext: mergeProjectContexts([cfg.projectContext, ...lensPacks.map((pack) => pack.projectContext)]),
+  };
+}
+
+function basename(input: string): string {
+  return input.split(/[\\/]/).filter(Boolean).at(-1) ?? input;
 }

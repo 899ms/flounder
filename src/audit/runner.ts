@@ -6,6 +6,7 @@ import { createAgentRegistry } from "../agents/registry.js";
 import { SourceIndex } from "../index/source-index.js";
 import { renderProjectLearning } from "../learn/project.js";
 import { renderAuditGuidanceForFailureMode } from "../lens/context.js";
+import { buildAuditContext, type AuditContextResult } from "../retrieval/context.js";
 import type { AuditItem, AuditResult, Doc, LlmClient, ProjectLearning, TrialFinding } from "../types.js";
 import type { RunLogger } from "../trace/logger.js";
 import { extractJsonObject } from "../util/json.js";
@@ -34,6 +35,7 @@ export async function runAudit(input: {
 
   const index = new SourceIndex(input.source);
   const agentRegistry = createAgentRegistry(effectiveAuditorAgents(input.cfg));
+  const contextTraces: AuditContextResult["trace"][] = [];
   const results = await mapLimit(input.items, input.cfg.maxWorkers, async (item) =>
     auditItem({
       cfg: input.cfg,
@@ -43,7 +45,12 @@ export async function runAudit(input: {
       projectLearning: input.projectLearning,
       llm: input.llm!,
       logger: input.logger,
+      contextTraces,
     }),
+  );
+  await input.logger.artifact(
+    contextArtifactName(input.artifactName),
+    contextTraces.sort((a, b) => a.itemId.localeCompare(b.itemId)),
   );
   await input.logger.artifact(input.artifactName ?? "audit_results.json", results);
   return results;
@@ -57,23 +64,46 @@ async function auditItem(input: {
   projectLearning: ProjectLearning | undefined;
   llm: LlmClient;
   logger: RunLogger;
+  contextTraces: AuditContextResult["trace"][];
 }): Promise<AuditResult> {
-  const sourceContext = input.index.contextForItem(input.item, input.cfg.contextCharBudget);
+  const contextResult = await buildAuditContext({ cfg: input.cfg, index: input.index, item: input.item });
+  input.contextTraces.push(contextResult.trace);
+  if (contextResult.trace.qmd && !contextResult.trace.qmd.available) {
+    await input.logger.event("qmd_unavailable", { id: input.item.id, error: contextResult.trace.qmd.error });
+  }
+  const sourceContext = contextResult.context;
   const lensGuidance = renderAuditGuidanceForFailureMode(input.cfg.lensPacks, input.item.failureMode);
   const user = buildAuditPrompt(input.item, sourceContext, input.agentRegistry, lensGuidance, renderProjectLearning(input.projectLearning));
   const trials = await mapLimit(
     Array.from({ length: input.cfg.trials }, (_, idx) => idx),
     Math.min(input.cfg.trials, Math.max(1, Math.floor(os.cpus().length / 2))),
     async (trial) => {
-      const text = await input.llm.complete({
-        tag: `audit_${input.item.id}_t${trial}`,
-        system: AUDIT_SYSTEM,
-        user,
-        model: input.cfg.auditModel,
-        maxTokens: input.cfg.maxTokens,
-        thinkingLevel: input.cfg.thinkingLevel,
-      });
-      return parseFinding(text);
+      try {
+        const text = await input.llm.complete({
+          tag: `audit_${input.item.id}_t${trial}`,
+          system: AUDIT_SYSTEM,
+          user,
+          model: input.cfg.auditModel,
+          maxTokens: input.cfg.maxTokens,
+          thinkingLevel: input.cfg.thinkingLevel,
+        });
+        return parseFinding(text);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await input.logger.event("trial_error", { id: input.item.id, trial, error: message.slice(0, 500) });
+        return {
+          finding: false,
+          title: "Model call failed",
+          severity: "info",
+          confidence: 0,
+          description: "The model provider failed for this trial; this item needs to be retried before drawing a conclusion.",
+          evidence: "",
+          exploitSketch: "",
+          fix: "",
+          modelError: true,
+          raw: message.slice(0, 4000),
+        } satisfies TrialFinding;
+      }
     },
   );
   const hits = trials.filter((trial) => trial.finding);
@@ -86,6 +116,11 @@ async function auditItem(input: {
   };
   await input.logger.event("item_done", { id: input.item.id, hitRate: result.hitRate });
   return result;
+}
+
+function contextArtifactName(auditArtifactName: string | undefined): string {
+  if (!auditArtifactName || auditArtifactName === "audit_results.json") return "context_retrieval.json";
+  return auditArtifactName.replace(/audit_results\.json$/, "context_retrieval.json");
 }
 
 function parseFinding(text: string): TrialFinding {

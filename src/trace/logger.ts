@@ -1,4 +1,4 @@
-import { mkdir, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, writeFile, appendFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 export class RunLogger {
@@ -7,15 +7,16 @@ export class RunLogger {
   readonly eventsPath: string;
   #callSeq = 0;
 
-  constructor(baseDir: string, targetName: string, now = new Date()) {
+  constructor(baseDir: string, targetName: string, now = new Date(), options: { runDir?: string } = {}) {
     const ts = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-    this.runDir = path.join(baseDir, `${targetName}-${ts}`);
+    this.runDir = options.runDir ? path.resolve(options.runDir) : path.join(baseDir, `${targetName}-${ts}`);
     this.callsDir = path.join(this.runDir, "calls");
     this.eventsPath = path.join(this.runDir, "events.jsonl");
   }
 
   async init(): Promise<void> {
     await mkdir(this.callsDir, { recursive: true });
+    this.#callSeq = await maxExistingCallSeq(this.callsDir);
   }
 
   async event(kind: string, data: Record<string, unknown> = {}): Promise<void> {
@@ -74,4 +75,23 @@ function safeName(input: string): string {
 
 function toPosix(input: string): string {
   return input.split(path.sep).join("/");
+}
+
+async function maxExistingCallSeq(callsDir: string): Promise<number> {
+  let files: string[];
+  try {
+    files = await readdir(callsDir);
+  } catch {
+    return 0;
+  }
+  let max = 0;
+  for (const file of files) {
+    const match = /^(\d+)_/.exec(file);
+    if (!match) continue;
+    const rawSeq = match[1];
+    if (!rawSeq) continue;
+    const seq = Number.parseInt(rawSeq, 10);
+    if (Number.isFinite(seq)) max = Math.max(max, seq);
+  }
+  return max;
 }

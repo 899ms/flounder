@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { loadSource } from "../dist/ingest/source.js";
 import { MockAuditLlmClient } from "../dist/llm/mock.js";
 import { runPipeline } from "../dist/pipeline.js";
 import { runSeeders } from "../dist/seeders/index.js";
+import { resolveLastRunDir } from "../dist/trace/last-run.js";
 
 const root = path.resolve(".");
 const fixtures = path.join(root, "fixtures");
@@ -85,6 +86,10 @@ test("mock pipeline runs enumerate, audit, verify, and report end to end", async
     "fixtures/halo2_missing_constraint.rs",
     "fixtures/halo2_scalar_mul_binding.rs",
   ]);
+  const contextTrace = JSON.parse(await readFile(path.join(result.runDir, "round_1_context_retrieval.json"), "utf8"));
+  assert.equal(contextTrace.length, 6);
+  assert.ok(contextTrace.every((trace) => trace.mode === "source-index"));
+  assert.ok(contextTrace.every((trace) => trace.slices.every((slice) => !path.isAbsolute(slice.path))));
 
   const firstFindingId = result.summary.findings[0].id;
   const reportName = `report_${firstFindingId}.md`;
@@ -142,21 +147,189 @@ test("multi-round mode deepens with novel follow-up checklist items", async () =
   cfg.localChecklistSeeders = false;
 
   const result = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 1 });
-  assert.equal(result.summary.coverage.itemsTotal, 2);
-  assert.equal(result.summary.coverage.itemsWithFinding, 2);
+  assert.equal(result.summary.coverage.itemsTotal, 3);
+  assert.equal(result.summary.coverage.itemsWithFinding, 3);
 
   const checklist = JSON.parse(await readFile(path.join(result.runDir, "checklist.json"), "utf8"));
-  assert.deepEqual(checklist.map((item) => item.round), [1, 2]);
-  assert.equal(new Set(checklist.map((item) => `${item.location}|${item.failureMode}|${item.securityProperty}`)).size, 2);
+  assert.deepEqual(checklist.map((item) => item.round), [1, 2, 2]);
+  assert.deepEqual(checklist.slice(1).map((item) => item.strategy).sort(), ["breadth", "depth"]);
+  assert.equal(new Set(checklist.map((item) => `${item.location}|${item.failureMode}|${item.securityProperty}`)).size, 3);
 
   const deepening = JSON.parse(await readFile(path.join(result.runDir, "round_2_deepening_items.json"), "utf8"));
-  assert.equal(deepening.accepted.length, 1);
-  assert.equal(deepening.accepted[0].id, "mock-round-2-enforcement-edge");
+  assert.equal(deepening.strategy, "hybrid");
+  assert.equal(deepening.accepted.length, 2);
+  assert.deepEqual(deepening.branches.map((branch) => branch.strategy), ["breadth", "depth"]);
+  assert.ok(deepening.accepted.some((item) => item.id === "mock-round-2-enforcement-edge"));
+  assert.ok(deepening.accepted.some((item) => item.id === "mock-round-2-proof-obligation"));
 
   const calls = await readdir(path.join(result.runDir, "calls"));
-  assert.ok(calls.some((file) => /_deepen_round_2\.json$/.test(file)));
+  assert.ok(calls.some((file) => /_deepen_round_2_breadth\.json$/.test(file)));
+  assert.ok(calls.some((file) => /_deepen_round_2_depth\.json$/.test(file)));
   await stat(path.join(result.runDir, "round_1_audit_results.json"));
   await stat(path.join(result.runDir, "round_2_audit_results.json"));
+});
+
+test("breadth strategy uses only breadth deepening budget", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-breadth-"));
+  const cfg = defaultConfig();
+  cfg.targetName = "test-breadth";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.rounds = 2;
+  cfg.explorationStrategy = "breadth";
+  cfg.localChecklistSeeders = false;
+
+  const result = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 1 });
+  assert.equal(result.summary.coverage.itemsTotal, 2);
+
+  const deepening = JSON.parse(await readFile(path.join(result.runDir, "round_2_deepening_items.json"), "utf8"));
+  assert.equal(deepening.strategy, "breadth");
+  assert.deepEqual(deepening.branches.map((branch) => branch.strategy), ["breadth"]);
+  assert.equal(deepening.accepted[0].strategy, "breadth");
+});
+
+test("resume mode appends additional rounds to the previous run", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-resume-"));
+  const cfg = defaultConfig();
+  cfg.targetName = "test-resume";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.rounds = 1;
+  cfg.localChecklistSeeders = false;
+
+  const first = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 0 });
+  const pointer = JSON.parse(await readFile(path.join(out, ".fsa-last-run.json"), "utf8"));
+  assert.equal(pointer.runDirName, path.basename(first.runDir));
+  assert.equal(path.isAbsolute(pointer.runDirName), false);
+  assert.equal(pointer.runDirName.includes(path.sep), false);
+  assert.equal(await resolveLastRunDir(out), first.runDir);
+
+  const resumed = await runPipeline(cfg, {
+    llm: new MockAuditLlmClient(),
+    verifyTopK: 0,
+    resumeRunDir: await resolveLastRunDir(out),
+  });
+  assert.equal(resumed.runDir, first.runDir);
+  assert.equal(resumed.summary.coverage.itemsTotal, 3);
+
+  const checklist = JSON.parse(await readFile(path.join(first.runDir, "checklist.json"), "utf8"));
+  assert.deepEqual(checklist.map((item) => item.round), [1, 2, 2]);
+
+  const resumeState = JSON.parse(await readFile(path.join(first.runDir, "resume_state.json"), "utf8"));
+  assert.equal(resumeState.completedRounds, 1);
+  assert.equal(resumeState.additionalRounds, 1);
+  assert.equal(resumeState.nextRound, 2);
+
+  const events = await readFile(path.join(first.runDir, "events.jsonl"), "utf8");
+  assert.match(events, /"kind":"resume_loaded"/);
+  await stat(path.join(first.runDir, "round_1_audit_results.json"));
+  await stat(path.join(first.runDir, "round_2_audit_results.json"));
+});
+
+test("resume mode recovers from partial round artifacts", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-partial-resume-"));
+  const cfg = defaultConfig();
+  cfg.targetName = "test-partial-resume";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.rounds = 1;
+  cfg.localChecklistSeeders = false;
+
+  const first = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 0 });
+  await rm(path.join(first.runDir, "audit_results.json"));
+  await writeFile(
+    path.join(first.runDir, "round_2_deepening_items.json"),
+    JSON.stringify(
+      {
+        round: 2,
+        strategy: "depth",
+        accepted: [
+          {
+            id: "pending-round-2",
+            location: "fixtures/halo2_scalar_mul_binding.rs:13-14",
+            securityProperty: "A pending item generated before interruption must be audited on resume.",
+            failureMode: "missing_constraint",
+            why: "This pending item simulates a failed run after deepening but before round audit completion.",
+            round: 2,
+            strategy: "depth",
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+
+  const resumed = await runPipeline(cfg, {
+    llm: new MockAuditLlmClient(),
+    verifyTopK: 0,
+    resumeRunDir: first.runDir,
+  });
+
+  assert.equal(resumed.runDir, first.runDir);
+  assert.equal(resumed.summary.coverage.itemsTotal, 2);
+  const checklist = JSON.parse(await readFile(path.join(first.runDir, "checklist.json"), "utf8"));
+  assert.deepEqual(checklist.map((item) => item.round), [1, 2]);
+  const resumeState = JSON.parse(await readFile(path.join(first.runDir, "resume_state.json"), "utf8"));
+  assert.equal(resumeState.completedRounds, 1);
+  assert.equal(resumeState.pendingRoundItems, 1);
+  const events = await readFile(path.join(first.runDir, "events.jsonl"), "utf8");
+  assert.match(events, /"kind":"pending_round_loaded"/);
+  await stat(path.join(first.runDir, "round_2_audit_results.json"));
+});
+
+test("resume mode retries model-error items from the same round", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-model-error-resume-"));
+  const cfg = defaultConfig();
+  cfg.targetName = "test-model-error-resume";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.rounds = 2;
+  cfg.localChecklistSeeders = false;
+
+  const first = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 0 });
+  const resultsPath = path.join(first.runDir, "audit_results.json");
+  const results = JSON.parse(await readFile(resultsPath, "utf8"));
+  const failed = results.find((result) => result.item.round === 2);
+  assert.ok(failed);
+  failed.nHits = 0;
+  failed.hitRate = 0;
+  failed.trials = [
+    {
+      finding: false,
+      title: "Model call failed",
+      severity: "info",
+      confidence: 0,
+      description: "Synthetic model error.",
+      evidence: "",
+      exploitSketch: "",
+      fix: "",
+      modelError: true,
+      raw: "limit reached",
+    },
+  ];
+  await writeFile(resultsPath, JSON.stringify(results, null, 2));
+
+  cfg.rounds = 1;
+  const resumed = await runPipeline(cfg, {
+    llm: new MockAuditLlmClient(),
+    verifyTopK: 0,
+    resumeRunDir: first.runDir,
+  });
+
+  assert.equal(resumed.summary.coverage.itemsTotal, 3);
+  assert.equal(resumed.summary.coverage.itemsWithFinding, 3);
+  const retryResults = JSON.parse(await readFile(path.join(first.runDir, "round_2_audit_results.json"), "utf8"));
+  assert.equal(retryResults.length, 1);
+  assert.equal(retryResults[0].item.id, failed.item.id);
+  assert.equal(retryResults[0].trials[0].modelError, undefined);
+  const resumeState = JSON.parse(await readFile(path.join(first.runDir, "resume_state.json"), "utf8"));
+  assert.equal(resumeState.completedRounds, 1);
+  assert.equal(resumeState.pendingRoundItems, 1);
 });
 
 function assertNoLocalAbsolutePath(body, label, forbiddenRoots) {

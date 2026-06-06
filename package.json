@@ -56,6 +56,7 @@
     "dist/pi/**",
     "dist/profile/**",
     "dist/reports/**",
+    "dist/retrieval/**",
     "dist/rounds/**",
     "dist/security/**",
     "dist/seeders/**",

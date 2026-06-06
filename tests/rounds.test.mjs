@@ -66,3 +66,78 @@ test("deepening accepts only novel follow-up items", async () => {
   assert.equal(artifact.accepted.length, 1);
   assert.ok(events.some((event) => event.kind === "deepening_done" && event.data.accepted === 1));
 });
+
+test("depth deepening follows model-produced near misses", async () => {
+  const cfg = defaultConfig();
+  cfg.targetName = "near-miss-test";
+  cfg.explorationStrategy = "depth";
+  cfg.maxNewItemsPerRound = 3;
+  let capturedUser = "";
+  const artifacts = new Map();
+  const logger = {
+    async artifact(name, value) {
+      artifacts.set(name, value);
+      return name;
+    },
+    async event() {},
+  };
+  const llm = {
+    async complete(input) {
+      capturedUser = input.user;
+      return JSON.stringify([
+        {
+          id: "follow-near-miss",
+          location: "src/circuit.rs:30-36",
+          securityProperty: "The adjacent caller boundary enforces the property before the checked computation uses it.",
+          failureMode: "missing_constraint",
+          why: "This follows a prior no-finding that identified a distinct edge requiring caller context.",
+        },
+      ]);
+    },
+  };
+  const priorItem = {
+    id: "prior",
+    location: "src/circuit.rs:10-12",
+    securityProperty: "The local checked computation enforces its precondition.",
+    failureMode: "missing_constraint",
+    why: "Initial item.",
+    round: 1,
+  };
+  const results = [
+    {
+      item: priorItem,
+      nTrials: 1,
+      nHits: 0,
+      hitRate: 0,
+      trials: [
+        {
+          finding: false,
+          title: "Local edge is enforced",
+          severity: "info",
+          confidence: 0.91,
+          description: "The local check is enforced for this item.",
+          evidence: "The current location has a visible check.",
+          exploitSketch: "",
+          fix: "If the intended concern is a distinct edge, inspect caller context and selector coverage in the adjacent flow.",
+        },
+      ],
+    },
+  ];
+
+  const items = await deepenAuditItems({
+    cfg,
+    corpus: [],
+    source: [{ path: "src/circuit.rs", content: "fn circuit() {}", kind: "source" }],
+    existingItems: [priorItem],
+    results,
+    round: 2,
+    llm,
+    logger,
+  });
+
+  assert.match(capturedUser, /Near-miss follow-up queue:/);
+  assert.match(capturedUser, /distinct edge/);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].strategy, "depth");
+  assert.equal(artifacts.get("round_2_deepening_items.json").nearMisses, 1);
+});

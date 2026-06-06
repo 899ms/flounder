@@ -48,6 +48,61 @@ test("source index accepts repeated file names in multi-range locations", () => 
   assert.match(context, /line 42 constraint gate/);
 });
 
+test("source index keeps semicolon-separated file ranges on their own files", () => {
+  const mul = makeDoc("external/mul.rs", 520, {
+    180: "mul line 180 variable-base scalar multiplication",
+    488: "mul line 488 unrelated test helper",
+  });
+  const chip = makeDoc("external/chip.rs", 520, {
+    488: "chip line 488 witness_point_non_id boundary",
+  });
+  const index = new SourceIndex([mul, chip]);
+  const context = index.contextForItem(
+    {
+      id: "multi-file-location",
+      location: "external/mul.rs:164-224; external/chip.rs:483-492",
+      securityProperty: "The public witness boundary must enforce the base invariant before multiplication.",
+      failureMode: "missing_constraint",
+      why: "Model returned two explicit file ranges separated by a semicolon.",
+    },
+    100_000,
+  );
+
+  assert.match(context, /mul line 180 variable-base scalar multiplication/);
+  assert.match(context, /chip line 488 witness_point_non_id boundary/);
+  assert.doesNotMatch(context, /mul line 488 unrelated test helper/);
+});
+
+test("source index follows call references from direct context", () => {
+  const chip = makeDoc("external/chip.rs", 520, {
+    488: "config.point_non_id(value, 0, &mut region)",
+  });
+  const noisy = makeDoc("external/add.rs", 500, {
+    10: "witness boundary filler that should not outrank the referenced helper",
+    80: "witness boundary filler that should not outrank the referenced helper",
+    160: "witness boundary filler that should not outrank the referenced helper",
+  });
+  const witness = makeDoc("external/witness_point.rs", 220, {
+    167: "pub(super) fn point_non_id(",
+    184: "q_point_non_id selector enforces curve membership",
+  });
+  const index = new SourceIndex([chip, noisy, witness]);
+  const context = index.contextForItem(
+    {
+      id: "follow-call-reference",
+      location: "external/chip.rs:483-492",
+      securityProperty: "The witness boundary must enforce the non-identity point invariant.",
+      failureMode: "input_validation",
+      why: "The direct location delegates validation to a helper method.",
+    },
+    5_000,
+  );
+
+  assert.match(context, /config\.point_non_id/);
+  assert.match(context, /pub\(super\) fn point_non_id/);
+  assert.match(context, /q_point_non_id selector/);
+});
+
 test("source index adds constraint setup context for narrow advice-assignment items", () => {
   const doc = makeDoc("external/incomplete.rs", 180, {
     20: "pub(super) fn configure(meta: &mut ConstraintSystem<F>) -> Self {",

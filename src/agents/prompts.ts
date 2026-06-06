@@ -125,6 +125,7 @@ export function buildDeepeningPrompt(input: {
   target: string;
   round: number;
   maxItems: number;
+  strategy: "breadth" | "depth";
   failureModes: FailureMode[];
   projectProfile: string;
   projectLearning: string;
@@ -132,6 +133,7 @@ export function buildDeepeningPrompt(input: {
   lensPacks: string;
   existingChecklist: string;
   auditObservations: string;
+  nearMisses?: string;
   currentFindings: string;
   corpus: string;
   source: string;
@@ -139,6 +141,7 @@ export function buildDeepeningPrompt(input: {
   return `Target: ${input.target}
 Round: ${input.round}
 Maximum new items: ${input.maxItems}
+Strategy: ${input.strategy}
 
 Allowed failure modes: ${input.failureModes.join(", ")}
 
@@ -160,8 +163,14 @@ ${input.existingChecklist || "(none)"}
 Prior audit observations:
 ${input.auditObservations || "(none)"}
 
+Near-miss follow-up queue:
+${input.nearMisses || "(none)"}
+
 Current ranked findings:
 ${input.currentFindings || "(none)"}
+
+Strategy guidance:
+${deepeningStrategyGuidance(input.strategy)}
 
 Create only new audit items for the next round. Each item must have:
 - id: short slug
@@ -187,6 +196,21 @@ ${input.corpus || "(none provided)"}
 ===== SOURCE UNDER AUDIT =====
 ${input.source || "(none provided)"}
 `;
+}
+
+function deepeningStrategyGuidance(strategy: "breadth" | "depth"): string {
+  if (strategy === "breadth") {
+    return `Breadth-limited expansion:
+- Spend the budget on unexamined modules, files, trust boundaries, invariants, and data-flow edges.
+- Use prior findings and no-findings as coverage signals, but do not spend items re-checking the same mechanism.
+- Prefer the next most security-relevant surface that is source-backed and distinct from existing checklist coverage.`;
+  }
+
+  return `Depth-limited hypothesis refinement:
+- Spend the budget on follow-up items that can confirm, refute, or narrow the strongest current candidates and skeptical observations.
+- For each item, name the missing assumption, enforcement edge, caller/callee dominance relation, or counterexample condition that needs to be checked.
+- Treat near-miss no-findings as useful planning evidence, not as proof. If a prior no-finding says a different edge would need caller context, selector coverage, or adjacent flow, create a new item for that edge if it is visible in the loaded source.
+- Do not simply restate or re-audit the same finding. Produce adjacent source-grounded checks that would strengthen or weaken the hypothesis.`;
 }
 
 export const VERIFY_SYSTEM = `You are the verification stage of a white-hat audit framework.

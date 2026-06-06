@@ -8,7 +8,7 @@ export function parseLocationRanges(location: string): LocationRange[] {
   const ranges: LocationRange[] = [];
   let activePath: string | undefined;
 
-  for (const rawSegment of location.split(/\s*,\s*/)) {
+  for (const rawSegment of location.split(/\s*[,;]\s*/)) {
     const segment = rawSegment.trim();
     if (!segment) continue;
 

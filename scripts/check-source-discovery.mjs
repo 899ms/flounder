@@ -21,6 +21,7 @@ cfg.enumModel = readFlag(args, "--enum-model") ?? readFlag(args, "--model") ?? c
 cfg.auditModel = readFlag(args, "--audit-model") ?? readFlag(args, "--model") ?? cfg.auditModel;
 cfg.verifyModel = readFlag(args, "--verify-model") ?? readFlag(args, "--model") ?? cfg.verifyModel;
 cfg.rounds = readIntFlag(args, "--rounds") ?? cfg.rounds;
+cfg.explorationStrategy = readStrategyFlag(args) ?? cfg.explorationStrategy;
 cfg.maxNewItemsPerRound = readIntFlag(args, "--max-new-items-per-round") ?? cfg.maxNewItemsPerRound;
 cfg.trials = readIntFlag(args, "--trials") ?? cfg.trials;
 cfg.maxAuditItems = readIntFlag(args, "--max-items") ?? cfg.maxAuditItems;
@@ -104,6 +105,11 @@ function readIntFlag(values, name) {
 function readThinkingFlag(values, name) {
   const value = readFlag(values, name);
   return value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" ? value : undefined;
+}
+
+function readStrategyFlag(values) {
+  const value = readFlag(values, "--strategy") ?? readFlag(values, "--exploration-strategy");
+  return value === "breadth" || value === "depth" || value === "hybrid" ? value : undefined;
 }
 
 function readRegexFlag(values, name) {

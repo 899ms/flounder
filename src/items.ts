@@ -12,6 +12,7 @@ export interface RawAuditItem {
   spec_refs?: string[];
   attackerControlledInputs?: string[];
   attacker_controlled_inputs?: string[];
+  strategy?: string;
 }
 
 export function normalizeAuditItem(raw: RawAuditItem, round?: number): AuditItem | undefined {
@@ -31,6 +32,7 @@ export function normalizeAuditItem(raw: RawAuditItem, round?: number): AuditItem
   if (specRefs) item.specRefs = specRefs;
   if (attackerControlledInputs) item.attackerControlledInputs = attackerControlledInputs;
   if (round !== undefined) item.round = round;
+  if (raw.strategy === "breadth" || raw.strategy === "depth") item.strategy = raw.strategy;
   return item;
 }
 

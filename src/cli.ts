@@ -10,6 +10,7 @@ import { aggregate } from "./audit/aggregate.js";
 import { createLlmClient } from "./llm/client.js";
 import { MockAuditLlmClient } from "./llm/mock.js";
 import { normalizeLensPacks, normalizeProjectContext } from "./lens/context.js";
+import { resolveLastRunDir } from "./trace/last-run.js";
 
 async function main(argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
@@ -20,7 +21,12 @@ async function main(argv: string[]): Promise<void> {
 
   if (cmd === "run") {
     const { cfg, verifyTopK } = await parseConfig(rest);
-    const result = await runPipeline(cfg, { verifyTopK, ...(hasFlag(rest, "--mock-llm") ? { llm: new MockAuditLlmClient() } : {}) });
+    const resumeRunDir = await readResumeRunDir(rest, cfg.outputDir);
+    const result = await runPipeline(cfg, {
+      verifyTopK,
+      ...(resumeRunDir ? { resumeRunDir } : {}),
+      ...(hasFlag(rest, "--mock-llm") ? { llm: new MockAuditLlmClient() } : {}),
+    });
     printCoverage(result.runDir, result.summary.coverage);
     return;
   }
@@ -62,6 +68,7 @@ async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig; verify
   cfg.auditModel = readFlag(args, "--audit-model") ?? readFlag(args, "--model") ?? cfg.auditModel;
   cfg.verifyModel = readFlag(args, "--verify-model") ?? readFlag(args, "--model") ?? cfg.verifyModel;
   cfg.rounds = readIntFlag(args, "--rounds") ?? cfg.rounds;
+  cfg.explorationStrategy = readStrategyFlag(args) ?? cfg.explorationStrategy;
   cfg.maxNewItemsPerRound = readIntFlag(args, "--max-new-items-per-round") ?? cfg.maxNewItemsPerRound;
   cfg.trials = readIntFlag(args, "--trials") ?? cfg.trials;
   cfg.maxWorkers = readIntFlag(args, "--max-workers") ?? cfg.maxWorkers;
@@ -69,6 +76,13 @@ async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig; verify
   if (maxAuditItems !== undefined) cfg.maxAuditItems = maxAuditItems;
   cfg.maxTokens = readIntFlag(args, "--max-tokens") ?? cfg.maxTokens;
   cfg.contextCharBudget = readIntFlag(args, "--context-chars") ?? cfg.contextCharBudget;
+  cfg.contextRetrieval = readRetrievalFlag(args) ?? cfg.contextRetrieval;
+  cfg.qmdCommand = readFlag(args, "--qmd-command") ?? cfg.qmdCommand;
+  cfg.qmdLimit = readIntFlag(args, "--qmd-limit") ?? cfg.qmdLimit;
+  cfg.qmdMinScore = readNumberFlag(args, "--qmd-min-score") ?? cfg.qmdMinScore;
+  cfg.qmdTimeoutMs = readIntFlag(args, "--qmd-timeout-ms") ?? cfg.qmdTimeoutMs;
+  const qmdCollections = readMultiFlag(args, "--qmd-collection");
+  if (qmdCollections.length > 0) cfg.qmdCollections = qmdCollections;
   if (args.includes("--dry-run")) cfg.dryRun = true;
   if (args.includes("--no-project-learning")) cfg.projectLearning = false;
   if (args.includes("--no-dynamic-lenses")) cfg.dynamicLensDiscovery = false;
@@ -99,6 +113,10 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
   }
   if (typeof raw.trials === "number" && Number.isFinite(raw.trials)) cfg.trials = Math.max(1, Math.floor(raw.trials));
   if (typeof raw.rounds === "number" && Number.isFinite(raw.rounds)) cfg.rounds = Math.max(1, Math.floor(raw.rounds));
+  const rawStrategy = raw.explorationStrategy ?? raw.exploration_strategy ?? raw.strategy;
+  if (rawStrategy === "breadth" || rawStrategy === "depth" || rawStrategy === "hybrid") {
+    cfg.explorationStrategy = rawStrategy;
+  }
   const rawMaxNewItemsPerRound = raw.maxNewItemsPerRound ?? raw.max_new_items_per_round;
   if (typeof rawMaxNewItemsPerRound === "number" && Number.isFinite(rawMaxNewItemsPerRound)) {
     cfg.maxNewItemsPerRound = Math.max(1, Math.floor(rawMaxNewItemsPerRound));
@@ -109,6 +127,19 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
   if (typeof raw.maxTokens === "number" && Number.isFinite(raw.maxTokens)) cfg.maxTokens = Math.max(1000, Math.floor(raw.maxTokens));
   if (typeof raw.contextCharBudget === "number" && Number.isFinite(raw.contextCharBudget)) {
     cfg.contextCharBudget = Math.max(4000, Math.floor(raw.contextCharBudget));
+  }
+  const rawRetrieval = raw.contextRetrieval ?? raw.context_retrieval ?? raw.retrieval;
+  if (rawRetrieval === "source-index" || rawRetrieval === "source-index+qmd") cfg.contextRetrieval = rawRetrieval;
+  if (typeof raw.qmdCommand === "string") cfg.qmdCommand = raw.qmdCommand;
+  if (typeof raw.qmdLimit === "number" && Number.isFinite(raw.qmdLimit)) cfg.qmdLimit = Math.max(1, Math.floor(raw.qmdLimit));
+  if (typeof raw.qmdMinScore === "number" && Number.isFinite(raw.qmdMinScore)) cfg.qmdMinScore = Math.max(0, raw.qmdMinScore);
+  const rawQmdTimeoutMs = raw.qmdTimeoutMs ?? raw.qmd_timeout_ms;
+  if (typeof rawQmdTimeoutMs === "number" && Number.isFinite(rawQmdTimeoutMs)) cfg.qmdTimeoutMs = Math.max(1000, Math.floor(rawQmdTimeoutMs));
+  const rawQmdCollections = raw.qmdCollections ?? raw.qmd_collections ?? raw.qmdCollection ?? raw.qmd_collection;
+  if (Array.isArray(rawQmdCollections) && rawQmdCollections.every((value) => typeof value === "string")) {
+    cfg.qmdCollections = rawQmdCollections.filter((value) => value.trim().length > 0);
+  } else if (typeof rawQmdCollections === "string" && rawQmdCollections.trim().length > 0) {
+    cfg.qmdCollections = [rawQmdCollections.trim()];
   }
   if (raw.thinkingLevel === "minimal" || raw.thinkingLevel === "low" || raw.thinkingLevel === "medium" || raw.thinkingLevel === "high" || raw.thinkingLevel === "xhigh") {
     cfg.thinkingLevel = raw.thinkingLevel;
@@ -151,6 +182,30 @@ function readIntFlag(args: string[], name: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function readNumberFlag(args: string[], name: string): number | undefined {
+  const value = readFlag(args, name);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readStrategyFlag(args: string[]): AuditorConfig["explorationStrategy"] | undefined {
+  const value = readFlag(args, "--strategy") ?? readFlag(args, "--exploration-strategy");
+  return value === "breadth" || value === "depth" || value === "hybrid" ? value : undefined;
+}
+
+function readRetrievalFlag(args: string[]): AuditorConfig["contextRetrieval"] | undefined {
+  const value = readFlag(args, "--retrieval") ?? readFlag(args, "--context-retrieval");
+  return value === "source-index" || value === "source-index+qmd" ? value : undefined;
+}
+
+async function readResumeRunDir(args: string[], outputDir: string): Promise<string | undefined> {
+  if (hasFlag(args, "--resume-last")) return resolveLastRunDir(outputDir);
+  const resumeRun = readFlag(args, "--resume-run");
+  if (resumeRun === "last") return resolveLastRunDir(outputDir);
+  return resumeRun;
+}
+
 function readMultiFlag(args: string[], name: string): string[] {
   const idx = args.indexOf(name);
   if (idx === -1) return [];
@@ -177,17 +232,30 @@ Usage:
 
 Options:
   --config <file>         JSON config with projectContext, lensPacks, agents, models, paths
-  --provider <name>       pi-ai provider or codex-cli, default openai
+  --provider <name>       pi-ai provider, codex-cli, or claude-code; default openai
   --model <name>          set enum/audit/verify model
   --enum-model <name>     model for checklist enumeration
   --audit-model <name>    model for audit trials
   --verify-model <name>   model for verification planning
   --rounds <n>            project exploration rounds, default 1
+                          with --resume-run, append n additional rounds
+  --strategy <name>       breadth|depth|hybrid, default hybrid
+  --resume-run <dir>      continue from an existing run directory
+  --resume-run last       continue from the last run under --out
+  --resume-last           shorthand for --resume-run last
   --max-new-items-per-round <n>
                           cap new deepening items per round, default 16
   --trials <n>            independent trials per item, default 4
   --max-items <n>         cap enumerated audit items for cost-controlled runs
   --thinking <level>      minimal|low|medium|high|xhigh
+  --context-chars <n>     character budget per audit item context
+  --retrieval <name>      source-index|source-index+qmd, default source-index
+  --qmd-command <cmd>     QMD CLI command when QMD retrieval is enabled, default qmd
+  --qmd-limit <n>         max QMD hits per item, default 6
+  --qmd-min-score <n>     minimum QMD hit score, default 0.25
+  --qmd-timeout-ms <n>    QMD query timeout, default 60000
+  --qmd-collection <names...>
+                          limit QMD retrieval to one or more collections
   --dry-run               no model calls; local checklist seeders only
   --no-project-learning   disable model initialization learning notes
   --no-dynamic-lenses     disable model-generated project lens packs

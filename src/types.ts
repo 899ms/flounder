@@ -1,4 +1,6 @@
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
+export type ExplorationStrategy = "breadth" | "depth" | "hybrid";
+export type ContextRetrievalMode = "source-index" | "source-index+qmd";
 
 export type BuiltInFailureMode =
   | "missing_constraint"
@@ -92,6 +94,7 @@ export interface AuditItem {
   attackerControlledInputs?: string[];
   seeder?: string;
   round?: number;
+  strategy?: Exclude<ExplorationStrategy, "hybrid">;
 }
 
 export interface TrialFinding {
@@ -104,6 +107,7 @@ export interface TrialFinding {
   exploitSketch: string;
   fix: string;
   parseError?: boolean;
+  modelError?: boolean;
   raw?: string;
 }
 

@@ -37,7 +37,7 @@ The framework therefore exposes both:
 - a normal CLI: `fsa run ...`
 - a pi package: `package.json` declares `src/pi/extension.ts`, `skills/`, and `prompts/`
 
-LLM calls use `@earendil-works/pi-ai` by default. A local `codex-cli` fallback provider is available for environments where pi provider credentials are unavailable but Codex CLI is authenticated; it is opt-in and not the default path.
+LLM calls use `@earendil-works/pi-ai` by default. Local CLI fallback providers are available for environments where pi provider credentials are unavailable but a CLI is authenticated: `codex-cli` for Codex CLI, and `claude-code` for Claude Code. These are opt-in and do not route through pi-ai.
 Provider availability is a runtime concern. Do not hard-code assumptions that every model family is available through every pi provider.
 
 ## Install
@@ -79,6 +79,7 @@ fsa run \
   --model gpt-5.5 \
   --thinking xhigh \
   --rounds 2 \
+  --strategy hybrid \
   --trials 4
 ```
 
@@ -86,10 +87,20 @@ Artifacts are written under `runs/<target>-<timestamp>/`.
 
 This live run uses model initialization learning, model-generated lenses, and model enumeration by default. Deterministic local seeders are off unless `--local-seeders` is passed.
 
-If pi provider credentials are unavailable but local Codex CLI is authenticated, use the fallback provider:
+Each audit round also writes `round_<n>_context_retrieval.json`. This artifact records which source slices were included for each audit item, why they were selected, how much budget they used, and whether optional QMD retrieval was available. Use it to debug recall quality before interpreting a no-finding as a model reasoning failure.
+
+If pi provider credentials are unavailable but local Codex CLI is authenticated, use the Codex CLI fallback provider:
 
 ```bash
 fsa run --config ./audit-config.json --provider codex-cli --model gpt-5.5 --thinking xhigh
+```
+
+The Codex CLI fallback runs with an ephemeral read-only workspace, ignores user config, disables local skill loading, and records each model call under the run's `calls/` directory. Provider failures are recorded as trial-level model errors so one transient call does not invalidate the whole round.
+
+For Claude Code, use the direct CLI fallback provider. `xhigh` maps to Claude Code's max effort mode:
+
+```bash
+fsa run --config ./audit-config.json --provider claude-code --model claude-opus-4-8 --thinking xhigh
 ```
 
 For cost-controlled exploratory runs, cap checklist size explicitly:
@@ -99,6 +110,63 @@ fsa run --config ./audit-config.json --max-items 25
 ```
 
 The default is uncapped.
+
+## Context Retrieval
+
+Audit trials need bounded source context. The default retriever is deterministic `source-index`: it includes explicit `file:line` ranges, nearby functions, same-file constraint setup, referenced helper definitions from direct context, and lexical term matches. This retrieval layer is not a bug detector; it only decides which code the model receives.
+
+For larger repositories, enable QMD as an optional semantic supplement:
+
+```bash
+fsa run \
+  --config ./audit-config.json \
+  --retrieval source-index+qmd \
+  --qmd-command qmd \
+  --qmd-limit 6 \
+  --qmd-min-score 0.25 \
+  --qmd-timeout-ms 60000 \
+  --qmd-collection target-code
+```
+
+QMD must already be installed and indexed for the target material. Use `--qmd-collection` to constrain retrieval to the target repository or corpus collection; scoped retrieval is faster and gives cleaner recall than searching every local QMD collection. If QMD is unavailable or times out, the run records `qmd_unavailable` and continues with deterministic source-index retrieval. QMD results are mapped back to the already ingested source files before they enter prompts, so run artifacts keep repository-relative paths instead of local absolute paths.
+
+Good recall quality is enforced through three mechanisms:
+
+- deterministic source navigation is tested with fixtures for multi-file locations, semicolon-separated locations, and delegated helper calls;
+- each run emits context retrieval traces so missed definitions are visible and reproducible;
+- optional QMD retrieval is collection-scoped, score-filtered, traced, and treated as a supplement to structural retrieval, not a replacement for it.
+
+## Continuing A Run
+
+Every completed run updates `runs/.fsa-last-run.json` with the previous run directory name only. The pointer avoids absolute local paths.
+
+Append one more exploration round to the latest run under `--out`:
+
+```bash
+fsa run --config ./audit-config.json --resume-last --rounds 1
+```
+
+In normal mode, `--rounds 2` means run rounds 1 and 2 in a new run. With `--resume-last` or `--resume-run <dir>`, `--rounds 2` means append two additional rounds after the completed rounds already stored in that run directory.
+
+Resume an explicit run directory when needed:
+
+```bash
+fsa run --config ./audit-config.json --resume-run runs/protocol-audit-20260605T161105Z --rounds 1
+```
+
+Resume mode reuses prior `checklist.json`, `audit_results.json`, `lens_packs.json`, and `project_learning.json`, then writes cumulative `summary.json`, `audit_results.json`, and coverage artifacts. Per-round artifacts such as `round_1_audit_results.json` remain in place, and newly appended rounds write `round_<n>_*` artifacts. If a run stops after writing per-round artifacts but before the final cumulative files, resume mode recovers from the completed `round_<n>_audit_results.json` files. If deepening items were already produced for the next round, resume audits those pending items instead of regenerating them.
+
+## Exploration Strategy
+
+Later rounds can use one of three strategies:
+
+- `breadth`: spend follow-up budget on new modules, trust boundaries, invariants, and unexamined data-flow edges.
+- `depth`: spend follow-up budget around the strongest candidates and skeptical observations, producing source-backed checks that can confirm, refute, or narrow those hypotheses.
+- `hybrid`: the default. Split the budget into breadth and depth planner branches, then deduplicate and audit the combined items.
+
+Default `hybrid` is the safest general-purpose policy for unknown projects: it keeps coverage expanding while forcing promising candidates to receive proof-oriented follow-up. When prior findings exist, roughly half the new-item budget goes to depth. When no findings exist, most budget stays on breadth while reserving a smaller slice for near-miss analysis.
+
+Near-miss analysis is not a vulnerability rule. It selects prior no-findings that proved a local invariant, selector edge, caller/callee boundary, or adjacent flow, then asks the planner to inspect the next source-backed edge rather than repeating the same item.
 
 ## Project-Specific Lens Packs
 
@@ -193,7 +261,7 @@ Try the package locally from this directory:
 pi -e .
 ```
 
-The extension registers `fsa_run_audit`. It defaults to `dryRun: true`, so the first call only uses local checklist seeders. It also accepts `projectContext`, `lensPacks`, `projectLearning`, `dynamicLensDiscovery`, `localChecklistSeeders`, `rounds`, `maxNewItemsPerRound`, and `maxAuditItems` parameters for project-specific audits. The extension blocks bash commands that combine public live networks with exploit/broadcast-style operations.
+The extension registers `fsa_run_audit`. It defaults to `dryRun: true`, so the first call only uses local checklist seeders. It also accepts `projectContext`, `lensPacks`, `projectLearning`, `dynamicLensDiscovery`, `localChecklistSeeders`, `rounds`, `explorationStrategy`, `maxNewItemsPerRound`, `maxAuditItems`, `resumeRunDir`, and `resumeLast` parameters for project-specific audits. The extension blocks bash commands that combine public live networks with exploit/broadcast-style operations.
 
 ## Outputs
 

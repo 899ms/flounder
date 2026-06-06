@@ -2,11 +2,26 @@ import type { AuditItem, Doc } from "../types.js";
 import { numberLines } from "../ingest/source.js";
 import { parseLocationRanges } from "../util/location.js";
 
-interface Slice {
+export interface ContextSlice {
   doc: Doc;
   startLine: number;
   endLine: number;
   reason: string;
+}
+
+export interface ContextTrace {
+  context: string;
+  slices: Array<{
+    path: string;
+    startLine: number;
+    endLine: number;
+    reason: string;
+    chars: number;
+    included: boolean;
+  }>;
+  budget: number;
+  usedChars: number;
+  truncated: boolean;
 }
 
 export interface SymbolRef {
@@ -26,48 +41,59 @@ export class SourceIndex {
   }
 
   contextForItem(item: AuditItem, budget: number): string {
-    const slices = this.slicesForItem(item);
-    const seen = new Set<string>();
-    const chunks: string[] = [];
-    let used = 0;
-
-    for (const slice of slices) {
-      const key = `${slice.doc.path}:${slice.startLine}:${slice.endLine}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const body = lineSlice(slice.doc, slice.startLine, slice.endLine);
-      const block = `\n===== FILE: ${slice.doc.path} lines ${slice.startLine}-${slice.endLine} (${slice.reason}) =====\n${body}\n`;
-      if (used + block.length > budget) {
-        const remaining = budget - used;
-        if (remaining > 1000) chunks.push(`${block.slice(0, remaining)}\n...[truncated]...\n`);
-        break;
-      }
-      chunks.push(block);
-      used += block.length;
-    }
-
-    if (chunks.length > 0) return chunks.join("");
-    return fallbackContext(this.docs, budget);
+    return this.contextForItemWithTrace(item, budget).context;
   }
 
-  slicesForItem(item: AuditItem): Slice[] {
-    const out: Slice[] = [];
+  contextForItemWithTrace(item: AuditItem, budget: number, extraSlices: ContextSlice[] = []): ContextTrace {
+    const slices = [...this.slicesForItem(item), ...extraSlices];
+    const trace = renderContextSlices(slices, budget);
+    if (trace.context.length > 0) return trace;
+    const fallback = fallbackContext(this.docs, budget);
+    return {
+      context: fallback,
+      slices: [],
+      budget,
+      usedChars: fallback.length,
+      truncated: fallback.length >= budget,
+    };
+  }
+
+  slicesForItem(item: AuditItem): ContextSlice[] {
+    const out: ContextSlice[] = [];
     const terms = termsForItem(item);
     const directDocs: Doc[] = [];
+    const directSlices: ContextSlice[] = [];
     for (const direct of parseLocationRanges(item.location)) {
       const doc = this.findDoc(direct.pathHint);
       if (doc) {
         directDocs.push(doc);
-        out.push({
+        const slice = {
           doc,
           startLine: Math.max(1, direct.startLine - 40),
           endLine: direct.endLine + 40,
           reason: "direct location",
-        });
+        };
+        directSlices.push(slice);
+        out.push(slice);
       }
     }
 
-    if (needsStructuralConstraintContext(item, terms)) {
+    const referenceTerms = referenceTermsForSlices(directSlices);
+    const expandedTerms = [...new Set([...referenceTerms, ...terms])].slice(0, 64);
+
+    for (const symbol of this.symbols) {
+      if (!referenceTerms.includes(symbol.name.toLowerCase())) continue;
+      const doc = this.findDoc(symbol.path);
+      if (!doc) continue;
+      out.push({
+        doc,
+        startLine: Math.max(1, symbol.line - 30),
+        endLine: symbol.line + 80,
+        reason: `referenced ${symbol.kind} ${symbol.name}`,
+      });
+    }
+
+    if (needsStructuralConstraintContext(item, expandedTerms)) {
       for (const doc of directDocs) {
         for (const symbol of this.symbols.filter((candidate) => candidate.path === doc.path && isConstraintSupportSymbol(candidate.name))) {
           out.push({
@@ -81,7 +107,7 @@ export class SourceIndex {
     }
 
     for (const doc of this.docs) {
-      const lineHits = searchLines(doc, terms).slice(0, 6);
+      const lineHits = searchLines(doc, expandedTerms).slice(0, 6);
       for (const hit of lineHits) {
         out.push({
           doc,
@@ -93,7 +119,7 @@ export class SourceIndex {
     }
 
     for (const symbol of this.symbols) {
-      if (!terms.some((term) => symbol.name.toLowerCase().includes(term))) continue;
+      if (!expandedTerms.some((term) => symbol.name.toLowerCase().includes(term))) continue;
       const doc = this.findDoc(symbol.path);
       if (!doc) continue;
       out.push({
@@ -116,6 +142,75 @@ export class SourceIndex {
       this.docs.find((doc) => doc.path.toLowerCase().endsWith(lowered.split("/").at(-1) ?? lowered))
     );
   }
+}
+
+export function renderContextSlices(slices: ContextSlice[], budget: number): ContextTrace {
+    const seen = new Set<string>();
+    const chunks: string[] = [];
+    const trace: ContextTrace["slices"] = [];
+    let used = 0;
+    let truncated = false;
+
+    for (const slice of slices) {
+      const key = `${slice.doc.path}:${slice.startLine}:${slice.endLine}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const body = lineSlice(slice.doc, slice.startLine, slice.endLine);
+      const block = `\n===== FILE: ${slice.doc.path} lines ${slice.startLine}-${slice.endLine} (${slice.reason}) =====\n${body}\n`;
+      if (used + block.length > budget) {
+        const remaining = budget - used;
+        truncated = true;
+        if (remaining > 1000) {
+          chunks.push(`${block.slice(0, remaining)}\n...[truncated]...\n`);
+          used += remaining;
+          trace.push({
+            path: slice.doc.path,
+            startLine: slice.startLine,
+            endLine: slice.endLine,
+            reason: slice.reason,
+            chars: remaining,
+            included: true,
+          });
+        } else {
+          trace.push({
+            path: slice.doc.path,
+            startLine: slice.startLine,
+            endLine: slice.endLine,
+            reason: slice.reason,
+            chars: block.length,
+            included: false,
+          });
+        }
+        break;
+      }
+      chunks.push(block);
+      used += block.length;
+      trace.push({
+        path: slice.doc.path,
+        startLine: slice.startLine,
+        endLine: slice.endLine,
+        reason: slice.reason,
+        chars: block.length,
+        included: true,
+      });
+    }
+
+    if (chunks.length > 0) {
+      return {
+        context: chunks.join(""),
+        slices: trace,
+        budget,
+        usedChars: used,
+        truncated,
+      };
+    }
+    return {
+      context: chunks.join(""),
+      slices: trace,
+      budget,
+      usedChars: used,
+      truncated,
+    };
 }
 
 function fallbackContext(docs: Doc[], budget: number): string {
@@ -189,6 +284,35 @@ function isConstraintSupportSymbol(name: string): boolean {
   return /configure|create_gate|gate|constraint|synthesi[sz]e|assign|layout/i.test(name);
 }
 
+function referenceTermsForSlices(slices: ContextSlice[]): string[] {
+  const ignored = new Set([
+    "clone",
+    "config",
+    "configure",
+    "create_gate",
+    "assign",
+    "assign_region",
+    "expect",
+    "from",
+    "into",
+    "map",
+    "namespace",
+    "ok",
+    "unwrap",
+    "zip",
+  ]);
+  const out: string[] = [];
+  for (const slice of slices) {
+    const text = rawSlice(slice.doc, slice.startLine, slice.endLine);
+    for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]{3,})\s*\(/g)) {
+      const term = match[1]?.toLowerCase();
+      if (!term || ignored.has(term)) continue;
+      out.push(term);
+    }
+  }
+  return [...new Set(out)].slice(0, 64);
+}
+
 function searchLines(doc: Doc, terms: string[]): number[] {
   if (terms.length === 0) return [];
   const hits: number[] = [];
@@ -198,6 +322,13 @@ function searchLines(doc: Doc, terms: string[]): number[] {
     if (terms.some((term) => lowered.includes(term))) hits.push(idx + 1);
   }
   return hits;
+}
+
+function rawSlice(doc: Doc, startLine: number, endLine: number): string {
+  const lines = doc.content.split(/\r?\n/);
+  const start = Math.max(1, startLine);
+  const end = Math.min(lines.length, Math.max(start, endLine));
+  return lines.slice(start - 1, end).join("\n");
 }
 
 function lineSlice(doc: Doc, startLine: number, endLine: number): string {
@@ -230,7 +361,7 @@ function symbolFromLine(line: string, ext: string): Omit<SymbolRef, "path" | "li
     [/\b(struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/, "struct"],
     [/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b/, "class"],
     [/\bcontract\s+([A-Za-z_][A-Za-z0-9_]*)\b/, "contract"],
-    [/\bimpl(?:<[^>]+>)?\s+([A-Za-z_][A-Za-z0-9_]*)\b/, "impl"],
+    [/^\s*impl(?:<[^>]+>)?\s+([A-Za-z_][A-Za-z0-9_]*)\b/, "impl"],
     [/\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\b/, "module"],
   ];
   for (const [pattern, kind] of patterns) {
