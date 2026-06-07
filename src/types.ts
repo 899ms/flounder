@@ -2,6 +2,7 @@ export type Severity = "info" | "low" | "medium" | "high" | "critical";
 export type ExplorationStrategy = "breadth" | "depth" | "hybrid";
 export type ContextRetrievalMode = "source-index" | "source-index+qmd";
 export type ReproductionMode = "off" | "plan" | "execute";
+export type ScopeMode = "augment" | "restrict";
 export type ConfirmationStatus = "suspected" | "confirmed-source" | "confirmed-executable";
 export type VerificationVerdict = "confirmed" | "needs-investigation" | "false-positive";
 
@@ -103,7 +104,38 @@ export type ProvenanceFactKind =
   | "equality_enabled_column"
   | "gate_creation"
   | "gate_query"
-  | "selector";
+  | "selector"
+  | "evm_external_function"
+  | "evm_external_call"
+  | "evm_delegatecall"
+  | "evm_state_write"
+  | "evm_auth_guard"
+  | "evm_signature_check"
+  | "evm_oracle_read"
+  | "evm_upgrade_hook"
+  | "evm_token_transfer"
+  | "evm_unchecked_arithmetic"
+  | "evm_bridge_message"
+  | "evm_bridge_asset_mapping"
+  | "evm_bridge_credit_accounting"
+  | "evm_bridge_native_drop"
+  | "evm_oft_supply_change"
+  | "evm_mint_redeem_order"
+  | "evm_erc4626_cooldown"
+  | "evm_restriction_role"
+  | "evm_eip1271_signature"
+  | "evm_beneficiary_allowlist"
+  | "evm_stable_price_limit"
+  | "evm_block_limit"
+  | "evm_governance_payload"
+  | "solana_anchor_account"
+  | "solana_pda_derivation"
+  | "solana_token_accounting"
+  | "solana_cpi_call"
+  | "solana_cross_chain_message"
+  | "solana_governance_execution"
+  | "solana_decimal_conversion"
+  | "solana_pause_or_config";
 
 export interface ProvenanceFact {
   id: string;
@@ -142,6 +174,7 @@ export interface AuditItem {
   specRefs?: string[];
   attackerControlledInputs?: string[];
   seeder?: string;
+  enumerationSource?: "baseline" | "model" | "portfolio" | "seeder" | "deepening";
   round?: number;
   strategy?: Exclude<ExplorationStrategy, "hybrid">;
 }
@@ -157,6 +190,7 @@ export interface TrialFinding {
   fix: string;
   parseError?: boolean;
   modelError?: boolean;
+  needsMoreContext?: boolean;
   raw?: string;
 }
 
@@ -184,6 +218,8 @@ export interface RankedFinding {
   confirmationStatus: ConfirmationStatus;
   verificationVerdict?: VerificationVerdict;
   reproductionStatus?: ReproductionStatus;
+  impactScore?: number;
+  impactSignals?: string[];
 }
 
 export interface AuditSummary {
@@ -191,6 +227,12 @@ export interface AuditSummary {
     itemsTotal: number;
     itemsWithFinding: number;
     bySeverity: Record<Severity, number>;
+    itemsNeedingRetry: number;
+    modelErrorTrials: number;
+    parseErrorTrials: number;
+    needsMoreContextTrials: number;
+    verifiedFindings: number;
+    unverifiedFindings: number;
   };
   findings: RankedFinding[];
 }
@@ -200,6 +242,9 @@ export interface Verification {
   verdict: VerificationVerdict;
   confirmationStatus: Extract<ConfirmationStatus, "suspected" | "confirmed-source">;
   markdown: string;
+  mode?: "standard" | "composition";
+  queueReason?: "topK" | "high-impact";
+  executableSuccessPatterns?: string[];
 }
 
 export interface ReproductionFile {
@@ -220,6 +265,7 @@ export interface ReproductionPlan {
   files: ReproductionFile[];
   commands: ReproductionCommand[];
   successCriteria: string[];
+  successPatterns?: string[];
   safetyNotes: string[];
 }
 
@@ -245,6 +291,8 @@ export interface Reproduction {
   commandResults: ReproductionCommandResult[];
   markdown: string;
   blockedReason?: string;
+  successPatternsMatched?: string[];
+  successPatternsMissing?: string[];
 }
 
 export interface LlmClient {

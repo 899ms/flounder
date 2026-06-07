@@ -68,6 +68,11 @@ export class SourceIndex {
       const doc = this.findDoc(direct.pathHint);
       if (doc) {
         directDocs.push(doc);
+        const semanticSlice = semanticSliceForDirectRange(doc, direct.startLine, direct.endLine);
+        if (semanticSlice) {
+          out.push(semanticSlice);
+          directSlices.push(semanticSlice);
+        }
         const slice = {
           doc,
           startLine: Math.max(1, direct.startLine - 40),
@@ -77,6 +82,12 @@ export class SourceIndex {
         directSlices.push(slice);
         out.push(slice);
       }
+    }
+    const symbolLocationSlices = this.slicesForSymbolLocations(item.location);
+    out.push(...symbolLocationSlices);
+    directSlices.push(...symbolLocationSlices);
+    for (const slice of symbolLocationSlices) {
+      if (!directDocs.includes(slice.doc)) directDocs.push(slice.doc);
     }
 
     const referenceTerms = referenceTermsForSlices(directSlices);
@@ -134,6 +145,40 @@ export class SourceIndex {
       });
     }
 
+    return out;
+  }
+
+  slicesForSymbolLocations(location: string): ContextSlice[] {
+    const out: ContextSlice[] = [];
+    const seen = new Set<string>();
+    for (const segment of location.split(/\s*;\s*/)) {
+      const match = /^([^:]+?\.[A-Za-z0-9]+)\s*:\s*(.+)$/.exec(segment.trim());
+      if (!match) continue;
+      const pathHint = match[1]?.trim();
+      const rawNames = match[2] ?? "";
+      if (!pathHint || /^\d/.test(rawNames.trim())) continue;
+      const doc = this.findDoc(pathHint);
+      if (!doc) continue;
+      for (const name of symbolNamesFromLocationHint(rawNames)) {
+        const symbol = this.symbols.find(
+          (candidate) => candidate.path === doc.path && candidate.name.toLowerCase() === name.toLowerCase(),
+        );
+        if (!symbol) continue;
+        const range = solidityBlockRange(doc, symbol.line) ?? {
+          startLine: Math.max(1, symbol.line - 20),
+          endLine: symbol.line + 120,
+        };
+        const key = `${doc.path}:${range.startLine}:${range.endLine}:${symbol.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          doc,
+          startLine: Math.max(1, range.startLine - 5),
+          endLine: range.endLine + 5,
+          reason: `location symbol ${symbol.name}`,
+        });
+      }
+    }
     return out;
   }
 
@@ -235,6 +280,86 @@ function fallbackContext(docs: Doc[], budget: number): string {
 
 function isConstraintSupportSymbol(name: string): boolean {
   return /configure|create_gate|gate|constraint|synthesi[sz]e|assign|layout/i.test(name);
+}
+
+function semanticSliceForDirectRange(doc: Doc, startLine: number, endLine: number): ContextSlice | undefined {
+  if (!doc.path.toLowerCase().endsWith(".sol")) return undefined;
+  const symbols = extractSymbols(doc)
+    .filter((symbol) => symbol.kind === "function" || symbol.kind === "contract")
+    .sort((a, b) => b.line - a.line);
+  for (const symbol of symbols) {
+    if (symbol.line > startLine) continue;
+    const range = solidityBlockRange(doc, symbol.line);
+    if (!range || range.endLine < startLine) continue;
+    return {
+      doc,
+      startLine: Math.max(1, range.startLine - 5),
+      endLine: Math.max(range.endLine + 5, endLine + 5),
+      reason: `${symbol.kind} block ${symbol.name}`,
+    };
+  }
+  return undefined;
+}
+
+function symbolNamesFromLocationHint(input: string): string[] {
+  const ignored = new Set([
+    "and",
+    "component",
+    "contract",
+    "external",
+    "function",
+    "functions",
+    "internal",
+    "line",
+    "lines",
+    "sol",
+  ]);
+  return [
+    ...new Set(
+      input
+        .replace(/\([^)]*\)/g, " ")
+        .split(/[^A-Za-z0-9_]+/)
+        .map((term) => term.trim())
+        .filter((term) => term.length >= 2 && !ignored.has(term.toLowerCase()) && !/^\d+$/.test(term)),
+    ),
+  ].slice(0, 24);
+}
+
+function solidityBlockRange(doc: Doc, startLine: number): { startLine: number; endLine: number } | undefined {
+  const lines = doc.content.split(/\r?\n/);
+  const startIdx = Math.max(0, startLine - 1);
+  let firstBraceIdx = -1;
+  for (let idx = startIdx; idx < lines.length; idx += 1) {
+    const line = stripSolidityLineComment(lines[idx] ?? "");
+    if (line.includes("{")) {
+      firstBraceIdx = idx;
+      break;
+    }
+    if (line.includes(";")) return { startLine, endLine: idx + 1 };
+    if (idx - startIdx > 80) break;
+  }
+  if (firstBraceIdx === -1) return undefined;
+
+  let depth = 0;
+  let seenBrace = false;
+  for (let idx = firstBraceIdx; idx < lines.length; idx += 1) {
+    const line = stripSolidityLineComment(lines[idx] ?? "");
+    for (const char of line) {
+      if (char === "{") {
+        depth += 1;
+        seenBrace = true;
+      } else if (char === "}") {
+        depth -= 1;
+        if (seenBrace && depth === 0) return { startLine, endLine: idx + 1 };
+      }
+    }
+  }
+  return undefined;
+}
+
+function stripSolidityLineComment(line: string): string {
+  const idx = line.indexOf("//");
+  return idx === -1 ? line : line.slice(0, idx);
 }
 
 function referenceTermsForSlices(slices: ContextSlice[]): string[] {

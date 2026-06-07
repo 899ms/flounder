@@ -12,7 +12,7 @@ The core workflow is:
 2. Build a deterministic project profile from language, framework, manifest, entrypoint, and security-domain signals.
 3. In live runs, let the model write initialization learning notes from the loaded material.
 4. Let the model perform project reconnaissance and propose dynamic lens packs.
-5. Enumerate concrete audit items before looking for bugs.
+5. Enumerate concrete audit items before looking for bugs, including a lens-free baseline pass when configured lenses are present.
 6. Route each item to built-in or project-specific failure-mode agents.
 7. Run one or more exploration rounds. Later rounds use prior coverage and audit observations to propose novel follow-up items.
 8. Run multiple independent model audit trials per item.
@@ -22,6 +22,8 @@ The core workflow is:
 12. Keep a complete audit trail of prompts, model outputs, artifacts, and events.
 
 Only model-backed audit trials produce bug findings. Project profiles, source indexes, initialization learning notes, dynamic lens packs, and optional local checklist seeders organize context and propose questions; they do not count as discovery evidence by themselves.
+
+The default scope mode is `augment`: configured or model-generated lens packs route attention, but they are not treated as the audit boundary. In augment mode, the first round reserves a configurable slice for lens-free baseline enumeration so manually supplied lenses do not blind the run to adjacent source-backed risks. Use `restrict` only when the engagement scope is intentionally limited and missing out-of-lens bugs is acceptable.
 
 `rounds` and `trials` are separate controls. Rounds deepen project exploration by generating new checklist items from previous coverage gaps. Trials repeat the audit of one item to measure stochastic agreement and reduce one-off model noise. A multi-round run must add novel checklist coverage; it is not a replay of a single pass.
 
@@ -88,6 +90,8 @@ Artifacts are written under `runs/<target>-<timestamp>/`.
 
 This live run uses model initialization learning, model-generated lenses, model enumeration, audit trials, aggregation, and source-level verification by default. Deterministic local seeders are off unless `--local-seeders` is passed. Executable PoC planning and execution are off by default.
 
+Live runs use `--scope-mode augment` by default. If a config file supplies project-specific lens packs, augment mode still asks the model for a separate broad baseline checklist. Tune that reserve with `--baseline-exploration-share <0..0.8>`, or use `--scope-mode restrict` for explicitly bounded engagements.
+
 Each audit round also writes `round_<n>_context_retrieval.json`. This artifact records which source slices were included for each audit item, why they were selected, how much budget they used, and whether optional QMD retrieval was available. Use it to debug recall quality before interpreting a no-finding as a model reasoning failure.
 
 If pi provider credentials are unavailable but local Codex CLI is authenticated, use the Codex CLI fallback provider:
@@ -120,9 +124,11 @@ Findings use three confirmation levels:
 
 - `suspected`: at least one model-backed audit trial reported a finding.
 - `confirmed-source`: the independent verification stage confirmed the reasoning from source-level evidence.
-- `confirmed-executable`: an optional local-only reproduction command matched its expected result.
+- `confirmed-executable`: an optional local-only reproduction command matched its expected result and produced a verifier-owned machine-checkable success pattern.
 
 The default `fsa run` mode stops before PoC planning or execution. This keeps vulnerability hunting focused on finding and source-confirming candidates without writing tests or running project commands.
+
+Verification is impact-first by default. `--verify-top <n>` selects the normal ranked queue, and `highImpactVerification` adds high-impact findings beyond that cap. Soundness gaps, missing constraints with malicious-prover impact, value/accounting failures, authorization bypasses, replay, bridge, oracle, solvency, and consensus-style issues should still receive source verification even when early scoring ranks them below lower-impact noise.
 
 To ask for a local-only reproduction plan at the end of a run:
 
@@ -146,9 +152,11 @@ fsa reproduce \
   --verify-top 100
 ```
 
-`--verify-top` controls how many ranked findings receive source verification and optional reproduction. Set it high enough when you want the separate reproduction command to cover every candidate in `summary.json`.
+`--verify-top` controls how many ranked findings receive source verification and optional reproduction. High-impact findings are added beyond this number unless `--no-high-impact-verification` is used. Set `--high-impact-max-findings` higher for high-budget bug hunts.
 
-The ReproductionAgent writes files only inside a copied workspace under the run directory. It does not modify the target source tree. Execution is limited to structured local test commands such as `cargo test`, `go test`, `node --test`, `pytest`, `forge test`, and comparable local test runners. Public testnet, mainnet, production, broadcast, transfer, credential, and exploit-optimization flows are blocked by policy.
+The ReproductionAgent writes files only inside a copied workspace under the run directory. It does not modify the target source tree. Execution is limited to structured local test commands such as `cargo test`, `go test`, `node --test`, `pytest`, `forge test`, and comparable local test runners. Public testnet, mainnet, production, broadcast, transfer, credential, and exploit-optimization flows are blocked by policy. Generated reproduction files are also scanned for remote URLs, subprocess spawning, and secret/RPC environment access before execution. Executed reproductions receive a minimal workspace-local environment with local cache and temp directories, so model-generated tests do not inherit local credentials, user paths, or Node options.
+
+Executable confirmation requires more than an exit code. The source verifier must provide `executableSuccessPatterns`, and the local command output must match those verifier-owned literal substrings. ReproductionAgent-only `successPatterns` are useful plan hints, but they cannot upgrade a finding to `confirmed-executable` by themselves. A command that exits with the expected status but provides no verifier-owned confirmation signal remains `needs-work`.
 
 ## Default Hunting Profiles
 
@@ -176,7 +184,21 @@ fsa run \
   --model gpt-5.5
 ```
 
-Both profiles are live-audit templates, not dry-run templates. They keep deterministic local checklist seeders disabled, enable source-backed portfolio enumeration, use `hybrid` breadth/depth exploration, reserve budget for later rounds, run multiple audit trials per item, and keep PoC reproduction off by default. They intentionally leave `sourcePaths`, `corpusPaths`, and `qmdCollections` empty so public package artifacts do not contain local paths or private collection names.
+For Solidity and EVM smart-contract targets, start from the contract profile:
+
+```bash
+fsa run \
+  --config ./configs/solidity-contract-hunt.default.json \
+  --target contract-audit \
+  --source <contract-source-paths...> \
+  --corpus <specs-docs-and-prior-audit-material...> \
+  --provider openai \
+  --model gpt-5.5
+```
+
+See [docs/SOLIDITY.md](docs/SOLIDITY.md) for the Solidity-specific lens packs, provenance extraction, recommended inputs, and local reproduction workflow.
+
+These profiles are live-audit templates, not dry-run templates. They keep deterministic local checklist seeders disabled, enable source-backed portfolio enumeration, use `hybrid` breadth/depth exploration, reserve budget for later rounds, run multiple audit trials per item, force high-impact findings through follow-up beyond the normal topK queue, and keep PoC reproduction off by default. They intentionally leave `sourcePaths`, `corpusPaths`, and `qmdCollections` empty so public package artifacts do not contain local paths or private collection names.
 
 Use `source-index+qmd` only with a QMD collection scoped to the target material when possible:
 
@@ -214,7 +236,7 @@ Good recall quality is enforced through three mechanisms:
 - proof obligations and provenance facts are extracted before enumeration, then used to prioritize source slices that might otherwise be truncated by a large repository overview;
 - optional QMD retrieval is collection-scoped, score-filtered, traced, and treated as a supplement to structural retrieval, not a replacement for it.
 
-`proof_obligations.json` records spec, source, initialization-learning, and provenance-derived properties that should be turned into source-backed audit items when relevant. `halo2_provenance_graph.json` records Halo2 advice/copy/equality/gate facts when the source uses that API. These artifacts are context-routing inputs only. They do not produce findings and should not be treated as static vulnerability rules.
+`proof_obligations.json` records spec, source, initialization-learning, and provenance-derived properties that should be turned into source-backed audit items when relevant. `halo2_provenance_graph.json` records Halo2 advice/copy/equality/gate facts when the source uses that API. `solidity_provenance_graph.json` records EVM facts such as external functions, external calls, delegatecall, state writes, authorization guards, signatures, oracle reads, upgrade hooks, token transfers, and unchecked arithmetic. These artifacts are context-routing inputs only. They do not produce findings and should not be treated as static vulnerability rules.
 
 ## Continuing A Run
 
@@ -234,7 +256,32 @@ Resume an explicit run directory when needed:
 fsa run --config ./audit-config.json --resume-run runs/protocol-audit-20260605T161105Z --rounds 1
 ```
 
-Resume mode reuses prior `checklist.json`, `audit_results.json`, `lens_packs.json`, and `project_learning.json`, then writes cumulative `summary.json`, `audit_results.json`, and coverage artifacts. Per-round artifacts such as `round_1_audit_results.json` remain in place, and newly appended rounds write `round_<n>_*` artifacts. If a run stops after writing per-round artifacts but before the final cumulative files, resume mode recovers from the completed `round_<n>_audit_results.json` files. If deepening items were already produced for the next round, resume audits those pending items instead of regenerating them.
+Resume mode reuses prior `checklist.json`, `audit_results.json`, `lens_packs.json`, and `project_learning.json`, then writes cumulative `summary.json`, `audit_results.json`, and coverage artifacts. Per-round artifacts such as `round_1_audit_results.json` remain in place, and newly appended rounds write `round_<n>_*` artifacts. If a run stops after writing per-round artifacts but before the final cumulative files, resume mode recovers from the completed `round_<n>_audit_results.json` files. If a run contains model errors, parse errors, or explicit needs-more-context trials, resume discards that round and later results, then re-audits the whole affected round so later deepening does not inherit stale partial evidence. If deepening items were already produced for the next incomplete round, resume audits those pending items instead of regenerating them.
+
+## Project Audit History And Materials
+
+Every completed run updates a project-level history manifest in `<out>/history/<target>/manifest.json`. Use `--history-dir <dir>` to store the history somewhere else, for example in a private ignored workspace. The manifest keeps a project-scoped list of runs, source-confirmed findings, aggregate coverage, severity counts, source files, failure modes, and a material index.
+
+Each project also gets `materials/index.json`. This index points to reusable project material such as `project_learning.json`, `lens_packs.json`, `source_index.json`, `proof_obligations.json`, context retrieval traces, checklists, audit results, verifications, reproduction outputs, reports, event logs, and model-call traces. The material paths are relative to the project history directory. Configured source and corpus paths are sanitized before they are written.
+
+To continue from the latest run saved for a project:
+
+```bash
+fsa run \
+  --config ./audit-config.json \
+  --continue-project protocol-audit \
+  --rounds 1
+```
+
+To import an older run snapshot into project history:
+
+```bash
+fsa history import-run \
+  --target protocol-audit \
+  --run runs/protocol-audit-20260605T161105Z
+```
+
+Importing a run copies that run directory into `<history-dir>/<target>/runs/<run-id>/`, then rebuilds the manifest and materials index from the copied snapshot. This makes future rounds and broader audits able to reuse the prior checklist, model learning, dynamic lenses, context traces, verification notes, and reports without relying on a global last-run pointer.
 
 ## Exploration Strategy
 
@@ -257,6 +304,8 @@ Generic built-in agents are the default baseline. For a real project, add projec
   "targetName": "example-service",
   "sourcePaths": ["./src"],
   "corpusPaths": ["./docs"],
+  "scopeMode": "augment",
+  "baselineExplorationShare": 0.25,
   "projectContext": {
     "criticalAssets": ["tenant-owned records", "billing state"],
     "attackerCapabilities": ["authenticated low-privilege user", "malicious webhook sender"],
@@ -289,6 +338,8 @@ Run it with:
 ```bash
 fsa run --config ./audit-config.json --provider openai --model gpt-5.5 --thinking xhigh
 ```
+
+In the default `augment` mode, these lens packs are advisory. They influence reconnaissance, enumeration, routing, and audit guidance, while the baseline pass keeps budget for risks outside the supplied lens set. Switch to `restrict` only when the configured scope is a hard engagement boundary.
 
 Live runs also enable dynamic lens discovery by default. The model reads the project profile and loaded context, writes `lens_packs.json`, and uses those lens packs during enumeration and audit. Disable that stage with `--no-dynamic-lenses` when you want only configured lenses.
 
@@ -351,7 +402,7 @@ Try the package locally from this directory:
 pi -e .
 ```
 
-The extension registers `fsa_run_audit`. It defaults to `dryRun: true`, so the first call only uses local checklist seeders. It also accepts `projectContext`, `lensPacks`, `projectLearning`, `dynamicLensDiscovery`, `localChecklistSeeders`, `rounds`, `explorationStrategy`, `maxNewItemsPerRound`, `maxAuditItems`, `resumeRunDir`, and `resumeLast` parameters for project-specific audits. The extension blocks bash commands that combine public live networks with exploit/broadcast-style operations.
+The extension registers `fsa_run_audit`. It defaults to `dryRun: true`, so the first call only uses local checklist seeders. It also accepts `projectContext`, `lensPacks`, `projectLearning`, `dynamicLensDiscovery`, `localChecklistSeeders`, `rounds`, `explorationStrategy`, `maxNewItemsPerRound`, `maxAuditItems`, `historyDir`, `continueProject`, `resumeRunDir`, and `resumeLast` parameters for project-specific audits. The extension blocks bash commands that combine public live networks with exploit/broadcast-style operations.
 
 ## Outputs
 
@@ -373,6 +424,7 @@ Each run writes:
 - `reproduction/<finding-id>/workspace`: optional copied workspace used only for executable reproduction.
 - `report_<id>.md`: private disclosure drafts for top findings.
 - `events.jsonl` and `calls/*.json`: audit trail for coverage analysis.
+- `<out>/history/<target>/manifest.json` and `materials/index.json`: project-level audit history and reusable material index.
 
 ## Library API
 

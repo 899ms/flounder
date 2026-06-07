@@ -1,4 +1,5 @@
 import type { AuditResult, AuditSummary, RankedFinding, Severity, TrialFinding } from "../types.js";
+import { assessImpact } from "./impact.js";
 
 const SEVERITY_RANK: Record<Severity, number> = {
   critical: 5,
@@ -10,10 +11,15 @@ const SEVERITY_RANK: Record<Severity, number> = {
 
 export function aggregate(results: AuditResult[]): AuditSummary {
   const findings: RankedFinding[] = [];
+  const modelErrorTrials = results.reduce((sum, result) => sum + result.trials.filter((trial) => trial.modelError).length, 0);
+  const parseErrorTrials = results.reduce((sum, result) => sum + result.trials.filter((trial) => trial.parseError).length, 0);
+  const needsMoreContextTrials = results.reduce((sum, result) => sum + result.trials.filter((trial) => trial.needsMoreContext).length, 0);
+  const itemsNeedingRetry = results.filter((result) => result.trials.some((trial) => trial.modelError || trial.parseError || trial.needsMoreContext)).length;
   for (const result of results) {
     if (result.nHits === 0) continue;
     const best = bestTrial(result.trials);
-    const score = SEVERITY_RANK[best.severity] * 2 + result.hitRate * 3 + best.confidence;
+    const impact = assessImpact(result.item, best);
+    const score = SEVERITY_RANK[best.severity] * 2 + result.hitRate * 3 + best.confidence + impact.score;
     findings.push({
       id: result.item.id,
       location: result.item.location,
@@ -28,6 +34,8 @@ export function aggregate(results: AuditResult[]): AuditSummary {
       exploitSketch: best.exploitSketch,
       fix: best.fix,
       confirmationStatus: "suspected",
+      impactScore: impact.score,
+      impactSignals: impact.signals,
     });
   }
   findings.sort((a, b) => b.score - a.score);
@@ -42,6 +50,12 @@ export function aggregate(results: AuditResult[]): AuditSummary {
         low: count(findings, "low"),
         info: count(findings, "info"),
       },
+      itemsNeedingRetry,
+      modelErrorTrials,
+      parseErrorTrials,
+      needsMoreContextTrials,
+      verifiedFindings: 0,
+      unverifiedFindings: findings.length,
     },
     findings,
   };

@@ -126,8 +126,15 @@ function detectManifest(path: string, manifests: Set<string>, packageManagers: S
     "gemfile": ["Ruby bundle manifest", "bundler"],
     "mix.exs": ["Elixir Mix manifest", "mix"],
     "foundry.toml": ["Foundry manifest", "foundry"],
+    "remappings.txt": ["Solidity remappings", "foundry/hardhat"],
     "hardhat.config.ts": ["Hardhat config", "hardhat"],
     "hardhat.config.js": ["Hardhat config", "hardhat"],
+    "hardhat.config.cjs": ["Hardhat config", "hardhat"],
+    "hardhat.config.mjs": ["Hardhat config", "hardhat"],
+    "slither.config.json": ["Slither config", "slither"],
+    "echidna.yaml": ["Echidna config", "echidna"],
+    "echidna.yml": ["Echidna config", "echidna"],
+    "medusa.json": ["Medusa config", "medusa"],
   };
   const hit = known[base];
   if (hit) {
@@ -153,6 +160,11 @@ function detectFrameworks(path: string, content: string, out: Set<string>): void
   if (/(tokio|async-std)/.test(text)) out.add("Rust async runtime");
   if (/(halo2|constraintsystem|assign_advice|copy_advice)/.test(text)) out.add("Halo2/constraint system");
   if (/(solidity|contract\s+[a-z_][a-z0-9_]*)/i.test(text)) out.add("EVM smart contract");
+  if (/(foundry\.toml|forge-std|forge test|vm\.)/.test(text)) out.add("Foundry");
+  if (/(hardhat\.config|@nomicfoundation\/hardhat|hardhat-deploy)/.test(text)) out.add("Hardhat");
+  if (/(openzeppelin|@openzeppelin|erc20|erc721|erc1155|erc4626)/.test(text)) out.add("OpenZeppelin/ERC standards");
+  if (/(transparentupgradeableproxy|uups|upgradeable|initializer|reinitializer|delegatecall|eip1967)/.test(text)) out.add("Upgradeable proxy");
+  if (/(chainlink|aggregatorv3interface|latestrounddata|oracle|twap)/.test(text)) out.add("Oracle integration");
   if (/(kubernetes|helm|terraform|pulumi|cloudformation)/.test(text)) out.add("Infrastructure as code");
 }
 
@@ -160,6 +172,11 @@ function detectSecurityDomains(path: string, content: string, out: Set<string>):
   const text = `${path}\n${content}`;
   if (/(halo2|constraintsystem|assign_advice|copy_advice|zero-knowledge|zk|proof)/.test(text)) out.add("zero-knowledge proof soundness");
   if (/(solidity|delegatecall|reentrancy|erc20|erc721|msg\.sender)/.test(text)) out.add("smart contract security");
+  if (/(vault|erc4626|amm|swap|pool|liquidat|borrow|lend|collateral|staking|reward|share|slippage)/.test(text)) out.add("DeFi economic and accounting security");
+  if (/(proxy|upgradeable|initializer|reinitializer|delegatecall|eip1967|storage gap|__gap)/.test(text)) out.add("smart contract upgradeability and storage safety");
+  if (/(oracle|latestrounddata|twap|pricefeed|sequencer|flashloan|mev|sandwich|slippage)/.test(text)) out.add("oracle and market manipulation risk");
+  if (/(permit|eip712|domain_separator|nonces?|ecrecover|ecdsa\.recover)/.test(text)) out.add("EVM signature and permit replay security");
+  if (/(bridge|cross[- ]?chain|chainid|lzendpoint|wormhole|ccip|message root|merkle proof)/.test(text)) out.add("cross-chain message and bridge security");
   if (/(jwt|oauth|session|cookie|password|login|auth)/.test(text)) out.add("authentication and session security");
   if (/(sql|query|postgres|mysql|sqlite|mongodb)/.test(text)) out.add("data access and injection risk");
   if (/(fetch|httpclient|requests\.|urllib|webhook|callback url|proxy)/.test(text)) out.add("server-side request and proxy safety");
@@ -175,6 +192,9 @@ function detectSecurityDomains(path: string, content: string, out: Set<string>):
 
 function detectEntrypoints(path: string, content: string, out: Set<string>): void {
   if (/\b(fn|function|def)\s+(main|handler|route|verify|prove|transfer|withdraw|deposit|mint|burn|spend)\b/i.test(content)) {
+    out.add(path);
+  }
+  if (path.endsWith(".sol") && /\bfunction\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*[^;{]*\b(public|external)\b/.test(content)) {
     out.add(path);
   }
   if (/(server|router|controller|handler|contract|circuit|chip|gadget)/i.test(path)) {

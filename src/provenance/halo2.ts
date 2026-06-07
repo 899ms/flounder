@@ -68,11 +68,15 @@ export function renderProvenanceGraph(graph: ProvenanceGraph, limit = 80): strin
   return [
     `Domain: ${graph.domain}`,
     `Summary: facts=${graph.summary.facts} assignmentFlowObligations=${graph.summary.assignmentFlowObligations}`,
-    obligations ? `Assignment-flow obligations:\n${obligations}` : "",
+    obligations ? `${obligationHeading(graph.domain)}:\n${obligations}` : "",
     facts ? `Facts:\n${facts}` : "",
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function obligationHeading(domain: string): string {
+  return domain === "halo2" ? "Assignment-flow obligations" : "Routing obligations";
 }
 
 function extractFactsFromDoc(doc: Doc): ProvenanceFact[] {

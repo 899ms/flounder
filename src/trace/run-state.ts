@@ -21,18 +21,22 @@ export async function loadResumedRunState(runDir: string): Promise<ResumedRunSta
   const rawResults = await readAuditResults(fullRunDir);
   const lensPacks = (await readOptionalArray<AuditLensPackDefinition>(fullRunDir, "lens_packs.json")) ?? [];
   const projectLearning = await readOptionalObject<ProjectLearning>(fullRunDir, "project_learning.json");
-  const modelErrorResults = rawResults.filter(hasModelError);
-  const retryRound = modelErrorResults.reduce((min, result) => Math.min(min, cleanRound(result.item?.round)), Number.POSITIVE_INFINITY);
-  const results = Number.isFinite(retryRound) ? rawResults.filter((result) => !hasModelError(result)) : rawResults;
-  const items = mergeAuditItems([...checkpointItems, ...results.map((result) => result.item)]);
+  const retryableResults = rawResults.filter(hasRetryableTrialError);
+  const retryRound = retryableResults.reduce((min, result) => Math.min(min, cleanRound(result.item?.round)), Number.POSITIVE_INFINITY);
+  const hasRetryRound = Number.isFinite(retryRound);
+  const results = hasRetryRound ? rawResults.filter((result) => cleanRound(result.item?.round) < retryRound) : rawResults;
+  const items = mergeAuditItems([
+    ...checkpointItems.filter((item) => !hasRetryRound || cleanRound(item.round) < retryRound),
+    ...results.map((result) => result.item),
+  ]);
   const completedRounds = Number.isFinite(retryRound)
     ? Math.max(0, retryRound - 1)
     : Math.max(roundsFromResults(results), await roundsFromArtifacts(fullRunDir));
-  if (completedRounds < 1) {
+  if (completedRounds < 1 && !hasRetryRound) {
     throw new Error("--resume-run does not contain completed round state");
   }
   const pendingRoundItems = Number.isFinite(retryRound)
-    ? modelErrorResults.map((result) => ({ ...result.item, round: retryRound }))
+    ? retryRoundItems(checkpointItems, rawResults, retryRound)
     : await readPendingRoundItems(fullRunDir, completedRounds + 1);
 
   return {
@@ -44,6 +48,12 @@ export async function loadResumedRunState(runDir: string): Promise<ResumedRunSta
     completedRounds,
     ...(pendingRoundItems.length > 0 ? { pendingRoundItems } : {}),
   };
+}
+
+function retryRoundItems(checkpointItems: AuditItem[], results: AuditResult[], retryRound: number): AuditItem[] {
+  const checkpointRoundItems = checkpointItems.filter((item) => cleanRound(item.round) === retryRound);
+  const resultRoundItems = results.filter((result) => cleanRound(result.item?.round) === retryRound).map((result) => result.item);
+  return mergeAuditItems([...checkpointRoundItems, ...resultRoundItems]).map((item) => ({ ...item, round: retryRound }));
 }
 
 export async function loadSummaryFromRun(runDir: string): Promise<AuditSummary> {
@@ -162,8 +172,8 @@ function mergeAuditItems(items: AuditItem[]): AuditItem[] {
   return out;
 }
 
-function hasModelError(result: AuditResult): boolean {
-  return result.trials.some((trial) => trial.modelError);
+function hasRetryableTrialError(result: AuditResult): boolean {
+  return result.trials.some((trial) => trial.modelError || trial.parseError || trial.needsMoreContext);
 }
 
 function cleanRound(value: unknown): number {

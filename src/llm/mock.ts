@@ -75,7 +75,7 @@ function responseFor(tag: string, user: string): string {
     ]);
   }
 
-  if (tag === "enumerate_assignment_dataflow") {
+  if (tag === "enumerate_halo2_portfolio" || tag === "enumerate_assignment_dataflow") {
     return JSON.stringify([
       {
         id: "mock-assignment-dataflow",
@@ -160,6 +160,10 @@ fn advice_assignment_must_be_constrained() {
 
 4. Minimal fix
 
+Executable success patterns:
+
+- mock reproduction demonstrates the local harness
+
 Replace unconstrained advice assignment with copy/equality-constrained assignment.`;
   }
 
@@ -183,6 +187,7 @@ Replace unconstrained advice assignment with copy/equality-constrained assignmen
         },
       ],
       successCriteria: ["The local test command exits with the expected status inside the copied workspace."],
+      successPatterns: ["mock reproduction demonstrates the local harness"],
       safetyNotes: ["The command uses node --test in a local temporary workspace and does not target a public network."],
     });
   }

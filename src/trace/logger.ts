@@ -66,12 +66,31 @@ export class RunLogger {
   }
 
   async artifact(name: string, value: unknown): Promise<string> {
-    const file = path.join(this.runDir, name);
+    const file = resolveArtifactPath(this.runDir, name);
+    const publicName = toPosix(path.relative(this.runDir, file));
     const body = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, body);
-    await this.event("artifact", { name, path: toPosix(name) });
+    await this.event("artifact", { name: publicName, path: publicName });
     return file;
   }
+}
+
+function resolveArtifactPath(runDir: string, name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed || path.isAbsolute(trimmed) || trimmed.includes("\0")) {
+    throw new Error(`Unsafe artifact path: ${name}`);
+  }
+  const normalized = path.normalize(trimmed);
+  if (normalized === "." || normalized.startsWith(`..${path.sep}`) || normalized === ".." || path.isAbsolute(normalized)) {
+    throw new Error(`Unsafe artifact path: ${name}`);
+  }
+  const root = path.resolve(runDir);
+  const file = path.resolve(root, normalized);
+  if (file !== root && !file.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`Unsafe artifact path: ${name}`);
+  }
+  return file;
 }
 
 function formatEventLine(kind: string, data: Record<string, unknown>): string {

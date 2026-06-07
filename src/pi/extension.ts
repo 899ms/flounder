@@ -5,6 +5,7 @@ import { normalizeLensPacks, normalizeProjectContext } from "../lens/context.js"
 import { runPipeline } from "../pipeline.js";
 import { analyzeCommandSafety } from "../security/policy.js";
 import { resolveLastRunDir } from "../trace/last-run.js";
+import { resolveProjectHistoryLatestRunDir } from "../trace/history.js";
 
 export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -22,6 +23,10 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       explorationStrategy: Type.Optional(Type.String({ description: "Deepening strategy for later rounds: breadth, depth, or hybrid." })),
       maxNewItemsPerRound: Type.Optional(Type.Number({ description: "Cap new deepening items per round." })),
       trials: Type.Optional(Type.Number({ description: "Independent audit trials per item." })),
+      highImpactVerification: Type.Optional(Type.Boolean({ description: "When true, force high-impact findings through verification beyond normal topK." })),
+      highImpactMaxFindings: Type.Optional(Type.Number({ description: "Additional high-impact findings to force through follow-up." })),
+      scopeMode: Type.Optional(Type.String({ description: "Scope mode: augment or restrict. Augment treats configured lenses as guidance, not a boundary." })),
+      baselineExplorationShare: Type.Optional(Type.Number({ description: "In augment mode, first-round share reserved for lens-free broad enumeration." })),
       maxAuditItems: Type.Optional(Type.Number({ description: "Optional cap on total audit items across rounds for cost-controlled runs." })),
       contextRetrieval: Type.Optional(Type.String({ description: "Context retrieval mode: source-index or source-index+qmd." })),
       qmdCommand: Type.Optional(Type.String({ description: "QMD CLI command when contextRetrieval is source-index+qmd." })),
@@ -30,6 +35,8 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       qmdTimeoutMs: Type.Optional(Type.Number({ description: "QMD query timeout in milliseconds." })),
       qmdCollections: Type.Optional(Type.Array(Type.String(), { description: "Optional QMD collections to search." })),
       outputDir: Type.Optional(Type.String({ description: "Artifact output directory." })),
+      historyDir: Type.Optional(Type.String({ description: "Project history directory. Defaults to outputDir/history." })),
+      continueProject: Type.Optional(Type.String({ description: "Target name whose latest project-history run should be resumed." })),
       resumeRunDir: Type.Optional(Type.String({ description: "Existing run directory to continue, or 'last' to use the latest run under outputDir." })),
       resumeLast: Type.Optional(Type.Boolean({ description: "When true, continue the latest run under outputDir." })),
       projectContext: Type.Optional(Type.Any({ description: "Project-specific assets, threats, invariants, focus areas, and out-of-scope notes." })),
@@ -54,6 +61,14 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       }
       cfg.maxNewItemsPerRound = params.maxNewItemsPerRound ?? cfg.maxNewItemsPerRound;
       cfg.trials = params.trials ?? cfg.trials;
+      cfg.highImpactVerification = params.highImpactVerification ?? cfg.highImpactVerification;
+      if (typeof params.highImpactMaxFindings === "number" && Number.isFinite(params.highImpactMaxFindings)) {
+        cfg.highImpactMaxFindings = Math.max(0, Math.floor(params.highImpactMaxFindings));
+      }
+      if (params.scopeMode === "augment" || params.scopeMode === "restrict") cfg.scopeMode = params.scopeMode;
+      if (typeof params.baselineExplorationShare === "number" && Number.isFinite(params.baselineExplorationShare)) {
+        cfg.baselineExplorationShare = Math.max(0, Math.min(0.8, params.baselineExplorationShare));
+      }
       if (params.maxAuditItems !== undefined) cfg.maxAuditItems = params.maxAuditItems;
       if (params.contextRetrieval === "source-index" || params.contextRetrieval === "source-index+qmd") cfg.contextRetrieval = params.contextRetrieval;
       cfg.qmdCommand = params.qmdCommand ?? cfg.qmdCommand;
@@ -62,6 +77,7 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       cfg.qmdTimeoutMs = params.qmdTimeoutMs ?? cfg.qmdTimeoutMs;
       cfg.qmdCollections = params.qmdCollections ?? cfg.qmdCollections;
       cfg.outputDir = params.outputDir ?? cfg.outputDir;
+      if (params.historyDir !== undefined) cfg.historyDir = params.historyDir;
       cfg.dryRun = params.dryRun ?? true;
       cfg.projectContext = normalizeProjectContext(params.projectContext) ?? cfg.projectContext;
       cfg.lensPacks = normalizeLensPacks(params.lensPacks);
@@ -79,16 +95,25 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
         cfg.verifyModel = params.model;
       }
 
-      const resumeRunDir =
-        params.resumeLast || params.resumeRunDir === "last"
+      if (params.continueProject && (params.resumeLast || params.resumeRunDir)) {
+        throw new Error("continueProject cannot be combined with resumeLast or resumeRunDir");
+      }
+      const resumeRunDir = params.continueProject
+        ? await resolveProjectHistoryLatestRunDir({
+            outputDir: cfg.outputDir,
+            targetName: params.continueProject,
+            ...(cfg.historyDir ? { historyDir: cfg.historyDir } : {}),
+          })
+        : params.resumeLast || params.resumeRunDir === "last"
           ? await resolveLastRunDir(cfg.outputDir)
           : params.resumeRunDir;
+      if (params.continueProject) cfg.targetName = params.continueProject;
       const result = await runPipeline(cfg, { ...(resumeRunDir ? { resumeRunDir } : {}) });
       return {
         content: [
           {
             type: "text",
-            text: `Run dir: ${result.runDir}\nFindings: ${result.summary.coverage.itemsWithFinding}/${result.summary.coverage.itemsTotal}\nBy severity: ${JSON.stringify(result.summary.coverage.bySeverity)}`,
+            text: `Run dir: ${result.runDir}\nFindings: ${result.summary.coverage.itemsWithFinding}/${result.summary.coverage.itemsTotal}\nBy severity: ${JSON.stringify(result.summary.coverage.bySeverity)}\nRetry items: ${result.summary.coverage.itemsNeedingRetry}\nNeeds-more-context trials: ${result.summary.coverage.needsMoreContextTrials}\nUnverified findings: ${result.summary.coverage.unverifiedFindings}`,
           },
         ],
         details: result,

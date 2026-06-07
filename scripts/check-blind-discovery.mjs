@@ -21,10 +21,10 @@ if (bindingItems.length !== 1) {
 }
 
 const body = JSON.stringify(bindingItems[0]);
-if (!/missing_constraint/.test(bindingItems[0].failureMode) || !/constrained to that input/.test(bindingItems[0].securityProperty)) {
+if (!/missing_constraint/.test(bindingItems[0].failureMode) || !/downstream gates that rely on them/.test(bindingItems[0].securityProperty)) {
   throw new Error("Blind checklist item did not preserve the expected generic missing-constraint invariant.");
 }
-if (!/scalar\/point-binding context/.test(body)) {
+if (!/scalar\/point dataflow context/.test(body)) {
   throw new Error("Blind checklist item did not explain the generic code shape it found.");
 }
 

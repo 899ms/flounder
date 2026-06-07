@@ -165,6 +165,27 @@ Project profile, source index, initialization learning notes, proof obligations,
 
 `AuditorConfig.localChecklistSeeders` controls whether deterministic seeders contribute checklist items. They are disabled by default and should be enabled only for dry-run coverage inspection or local regression tests. Source-discovery proof runs should leave them disabled so both checklist enumeration and audit findings come from model calls.
 
+## Scope Modes And Baseline Exploration
+
+`AuditorConfig.scopeMode` controls how configured and model-generated lens packs affect first-round enumeration:
+
+- `augment`: the default. Lens packs are attention guidance, not boundaries. The enumerator still looks for high-impact source-backed bugs outside the supplied lenses, and a separate lens-free baseline pass reserves part of the first-round budget for broad exploration.
+- `restrict`: lens packs and configured context are treated as the explicit audit boundary. Use this only for narrow authorized scopes where out-of-lens risks should not be searched or reported.
+
+`AuditorConfig.baselineExplorationShare` controls the first-round budget reserved for the lens-free baseline pass in augment mode. This is a recall safeguard: a user can provide a narrow lens pack for emphasis without accidentally suppressing unrelated trust boundaries, entrypoints, or invariants visible in the loaded source.
+
+The baseline pass is still model-backed enumeration, not a deterministic vulnerability detector. It can add checklist items, but findings still require audit trials and verification.
+
+## High-Impact Follow-Up
+
+The framework optimizes for serious bugs over raw finding volume. Aggregation adds an impact score to each model-backed finding using the assigned failure mode, model severity, confidence, and source-backed signals such as proof soundness, malicious-prover control, value or solvency impact, authorization/replay impact, bridge/oracle exposure, nullifiers, consensus integrity, and verified-statement integrity.
+
+`AuditorConfig.highImpactVerification` is enabled by default. The verifier always processes the normal `--verify-top` ranked queue, then adds high-impact findings beyond that cap up to `AuditorConfig.highImpactMaxFindings`. This protects serious candidates from being dropped merely because an early model trial under-ranked severity or produced a lower hit rate than simpler issues.
+
+Retry quality also affects coverage. Model errors, JSON parse errors, and no-finding trials that explicitly say they need more source context all mark the item as retryable. Resume mode removes those partial results and re-audits the affected round items instead of treating the failed trial as negative evidence.
+
+For ZK and constraint-system findings, verification can switch into composition mode. Composition verification must trace the full chain from attacker-controlled witness or caller input, through assigned/internal cells, copy/equality/lookup/range relations, gate/selector/rotation coverage, caller or gadget composition, and the verified statement. A local gadget gap is not source-confirmed if the surrounding algorithm, caller dominance, complete-addition tail, selector schedule, equality copy, or regression test blocks the counterexample.
+
 ## Rounds vs Trials
 
 The framework has two different repetition mechanisms:
@@ -176,7 +197,9 @@ This distinction is important. A stronger run should not merely repeat the same 
 
 The deepening stage is still a planning stage. It does not produce findings. It only expands the checklist with source-grounded questions for later audit agents.
 
-`--resume-run <dir>` and `--resume-last` append additional rounds to an existing run. Resume mode loads prior `checklist.json`, `audit_results.json`, `lens_packs.json`, and `project_learning.json`, then starts at the next round number. If a run fails before writing cumulative `audit_results.json`, resume falls back to completed `round_<n>_audit_results.json` artifacts. If a failed run already produced `round_<n>_deepening_items.json` for the next incomplete round, resume audits those pending items instead of spending another model call to regenerate them. In normal mode, `--rounds <n>` means "run n total rounds from scratch"; in resume mode, `--rounds <n>` means "append n more rounds."
+`--resume-run <dir>` and `--resume-last` append additional rounds to an existing run. Resume mode loads prior `checklist.json`, `audit_results.json`, `lens_packs.json`, and `project_learning.json`, then starts at the next round number. If a run fails before writing cumulative `audit_results.json`, resume falls back to completed `round_<n>_audit_results.json` artifacts. If any round contains model errors, parse errors, or explicit needs-more-context trials, resume treats that round and later rounds as stale, drops their results, and re-audits the whole affected round. If a failed run already produced `round_<n>_deepening_items.json` for the next incomplete round, resume audits those pending items instead of spending another model call to regenerate them. In normal mode, `--rounds <n>` means "run n total rounds from scratch"; in resume mode, `--rounds <n>` means "append n more rounds."
+
+Project history is the durable layer above single-run resume. `src/trace/history.ts` writes a per-target manifest and material index under `<out>/history/<target>/` by default. The manifest aggregates prior runs, findings, source files, failure modes, severity counts, and confirmation counts. The material index records sanitized pointers to reusable run artifacts such as project learning, dynamic lenses, source indexes, proof obligations, context retrieval traces, checklists, audit results, verification notes, reports, events, and model-call traces. `--continue-project <target>` resolves the latest run from this project history instead of relying on the global last-run pointer.
 
 The deepening strategy is explicit:
 
@@ -217,9 +240,11 @@ Live runs enable `projectLearning` and `dynamicLensDiscovery` by default. Projec
 
 The initialization path now extracts `proof_obligations.json` from loaded corpus, source text, model learning notes, and supported provenance adapters. Obligations are short source-backed properties that enumeration should turn into concrete audit items when visible implementation evidence exists. They are intentionally not vulnerability findings.
 
-Supported provenance adapters emit machine-readable facts about how security-relevant values move through a framework or DSL. The current Halo2 adapter writes `halo2_provenance_graph.json` with advice assignments, advice copies, equality constraints, equality-enabled columns, gate creation, gate queries, and selectors. This makes assignment and enforcement edges visible to the model even when a large source overview would otherwise truncate the relevant lines.
+Supported provenance adapters emit machine-readable facts about how security-relevant values move through a framework or DSL. The Halo2 adapter writes `halo2_provenance_graph.json` with advice assignments, advice copies, equality constraints, equality-enabled columns, gate creation, gate queries, and selectors. The Solidity adapter writes `solidity_provenance_graph.json` with externally callable functions, external calls, delegatecall, state writes, authorization guards, signature checks, oracle reads, upgrade hooks, token transfers, and unchecked arithmetic. These adapters make important routing and enforcement edges visible to the model even when a large source overview would otherwise truncate the relevant lines.
 
-The adapter does not encode "this is a bug" rules. It only creates attention-routing facts and generic assignment-flow obligations. The model must still enumerate a concrete source-backed audit item, the audit stage must reason over the retrieved code, and verification must confirm or refute the candidate locally.
+Portfolio enumeration consumes provenance graphs by domain. Halo2 graphs use assignment/dataflow portfolio prompts, while Solidity graphs use EVM-specific prompts for public entrypoints, token/accounting flows, external calls, delegatecall/proxy paths, signatures, oracles, and unchecked arithmetic. Adding a new provenance adapter should include a domain-specific portfolio prompt when generic dataflow language would under-specify the attack surface.
+
+The adapters do not encode "this is a bug" rules. They only create attention-routing facts and generic routing obligations. The model must still enumerate a concrete source-backed audit item, the audit stage must reason over the retrieved code, and verification must confirm or refute the candidate locally.
 
 ## Context Retrieval Quality
 
@@ -283,8 +308,10 @@ Findings carry a confirmation status:
 
 - `suspected`: at least one model-backed audit trial reported a candidate.
 - `confirmed-source`: the independent verifier confirmed the source reasoning.
-- `confirmed-executable`: an optional local reproduction command matched its expected result.
+- `confirmed-executable`: an optional local reproduction command matched its expected result and produced verifier-owned machine-checkable success patterns.
 
-`AuditorConfig.reproductionMode` defaults to `off`, so normal hunting runs do not write PoC tests or run target project commands. `plan` asks the ReproductionAgent for a structured local-only plan. `execute` copies the configured source roots into `reproduction/<finding-id>/workspace`, writes only relative-path test files inside that workspace, and runs structured local test commands with the shared command-safety policy.
+`AuditorConfig.reproductionMode` defaults to `off`, so normal hunting runs do not write PoC tests or run target project commands. `plan` asks the ReproductionAgent for a structured local-only plan. `execute` copies the configured source roots into `reproduction/<finding-id>/workspace`, writes only relative-path test files inside that workspace, scans generated files for remote URLs, subprocess spawning, and secret/RPC environment access, then runs structured local test commands with the shared command-safety policy. Executed commands receive a minimal workspace-local environment: `HOME`, temp, cache, Cargo, Go, and npm cache paths point inside the copied workspace, and local user, shell, credential, and Node option environment variables are not inherited.
+
+Executable confirmation requires source-verifier-owned `executableSuccessPatterns`, short literal output substrings from the local command output. Matching an exit status alone is insufficient, and ReproductionAgent-only strings cannot upgrade a finding to executable confirmation, because a generic passing test or skipped test can otherwise be mistaken for exploitability proof. Strong plans should demonstrate the vulnerable condition on the original code and, when practical, the pass-after-fix condition on the minimal patch.
 
 The CLI also exposes `fsa reproduce --run <dir> --source <paths...> --repro plan|execute` so PoC work can be batched after all potential bugs are found. This command reuses `summary.json`, `verifications.json`, and the same ReproductionAgent runner, then updates reports and confirmation status.

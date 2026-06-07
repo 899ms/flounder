@@ -42,6 +42,10 @@
     "security-audit",
     "whitehat",
     "agent",
+    "solidity",
+    "smart-contract",
+    "evm",
+    "defi",
     "zk",
     "crypto"
   ],

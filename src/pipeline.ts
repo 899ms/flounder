@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { AuditorConfig } from "./config.js";
 import { aggregate } from "./audit/aggregate.js";
+import { selectFindingsForFollowUp } from "./audit/impact.js";
 import { runAudit } from "./audit/runner.js";
 import { enumerateAuditItems } from "./enumerate.js";
 import { loadCorpus, loadSource } from "./ingest/source.js";
@@ -12,9 +13,12 @@ import { createLlmClient } from "./llm/client.js";
 import { extractProofObligations } from "./obligations/extract.js";
 import { profileProject } from "./profile/project.js";
 import { extractHalo2Provenance } from "./provenance/halo2.js";
-import { renderDisclosure } from "./reports/disclosure.js";
+import { extractRustSolanaProvenance } from "./provenance/rust.js";
+import { extractSolidityProvenance } from "./provenance/solidity.js";
+import { renderDisclosure, reportArtifactName } from "./reports/disclosure.js";
 import { summarizeChecklist, summarizeRun, summarizeSourceIndex } from "./reports/coverage.js";
 import { reproduceTop } from "./reproduce/planner.js";
+import { projectHistoryManifestPath, updateProjectHistory } from "./trace/history.js";
 import { deepenAuditItems } from "./rounds/deepen.js";
 import { writeLastRunPointer } from "./trace/last-run.js";
 import { RunLogger } from "./trace/logger.js";
@@ -33,7 +37,8 @@ export async function runPipeline(
   options: { verifyTopK?: number; llm?: LlmClient; resumeRunDir?: string; streamEvents?: boolean } = {},
 ): Promise<PipelineResult> {
   const resumed = options.resumeRunDir ? await loadResumedRunState(options.resumeRunDir) : undefined;
-  const logger = new RunLogger(cfg.outputDir, cfg.targetName, new Date(), {
+  const startedAt = new Date();
+  const logger = new RunLogger(cfg.outputDir, cfg.targetName, startedAt, {
     ...(resumed ? { runDir: resumed.runDir } : {}),
     streamEvents: options.streamEvents ?? false,
   });
@@ -48,6 +53,7 @@ export async function runPipeline(
     enumModel: cfg.enumModel,
     auditModel: cfg.auditModel,
     verifyModel: cfg.verifyModel,
+    thinkingLevel: cfg.thinkingLevel,
     rounds: requestedRounds,
     explorationStrategy: cfg.explorationStrategy,
     trials: cfg.trials,
@@ -143,10 +149,10 @@ export async function runPipeline(
   for (let round = firstRound; round <= lastRound; round += 1) {
     await logger.event("round_start", { round });
     const roundItems =
-      round === 1
-        ? items.filter((item) => (item.round ?? 1) === 1)
-        : resumed?.pendingRoundItems && round === firstRound
+      resumed?.pendingRoundItems && round === firstRound
           ? await loadPendingRoundItems({ logger, round, items: resumed.pendingRoundItems })
+        : round === 1
+          ? items.filter((item) => (item.round ?? 1) === 1)
           : await deepenAuditItems({
               cfg: runCfg,
               corpus,
@@ -185,6 +191,7 @@ export async function runPipeline(
   await logger.artifact("checklist_coverage.json", summarizeChecklist(items));
   await logger.artifact("run_coverage.json", summarizeRun(items, results));
   const summary = aggregate(results);
+  updateVerificationCoverage(summary);
   await logger.artifact("summary.json", summary);
 
   if (summary.findings.length > 0) {
@@ -198,6 +205,7 @@ export async function runPipeline(
       topK: options.verifyTopK ?? 3,
     });
     applyVerificationStatuses(summary, verifications);
+    updateVerificationCoverage(summary);
     const reproductions = await reproduceTop({
       cfg: runCfg,
       findings: summary.findings,
@@ -209,11 +217,12 @@ export async function runPipeline(
       topK: options.verifyTopK ?? 3,
     });
     applyReproductionStatuses(summary, reproductions);
+    updateVerificationCoverage(summary);
     await logger.artifact("summary.json", summary);
     const byId = new Map(verifications.map((verification) => [verification.id, verification]));
     const reproductionByFindingId = new Map(reproductions.map((reproduction) => [reproduction.findingId, reproduction]));
-    for (const finding of summary.findings.slice(0, options.verifyTopK ?? 3)) {
-      await logger.artifact(`report_${finding.id}.md`, renderDisclosure(cfg.targetName, finding, byId.get(finding.id), reproductionByFindingId.get(finding.id)));
+    for (const finding of selectFindingsForFollowUp(summary.findings, options.verifyTopK ?? 3, runCfg)) {
+      await logger.artifact(reportArtifactName(finding.id), renderDisclosure(cfg.targetName, finding, byId.get(finding.id), reproductionByFindingId.get(finding.id)));
     }
   }
 
@@ -223,7 +232,30 @@ export async function runPipeline(
     confirmedExecutable: summary.findings.filter((finding) => finding.confirmationStatus === "confirmed-executable").length,
   });
   await writeLastRunPointer(path.dirname(logger.runDir), logger.runDir, cfg.targetName);
+  const history = await updateProjectHistory({
+    cfg,
+    runDir: logger.runDir,
+    summary,
+    items,
+    results,
+    completedRounds: lastRound,
+    startedAt: startedAt.toISOString(),
+  });
+  await logger.event("project_history_updated", {
+    target: cfg.targetName,
+    runs: history.aggregate.totalRuns,
+    materials: history.aggregate.materialsTotal,
+    manifest: publicPath(projectHistoryManifestPath(projectHistoryLocation(cfg))),
+  });
   return { runDir: logger.runDir, summary };
+}
+
+function projectHistoryLocation(cfg: AuditorConfig): { outputDir: string; targetName: string; historyDir?: string } {
+  return {
+    outputDir: cfg.outputDir,
+    targetName: cfg.targetName,
+    ...(cfg.historyDir ? { historyDir: cfg.historyDir } : {}),
+  };
 }
 
 function mergeLensPacks(existing: AuditLensPackDefinition[], configured: AuditLensPackDefinition[]): AuditLensPackDefinition[] {
@@ -262,7 +294,9 @@ function basename(input: string): string {
 }
 
 function extractProvenanceGraphs(source: Parameters<typeof extractHalo2Provenance>[0]): ProvenanceGraph[] {
-  return [extractHalo2Provenance(source)].filter((graph) => graph.summary.facts > 0 || graph.summary.assignmentFlowObligations > 0);
+  return [extractHalo2Provenance(source), extractSolidityProvenance(source), extractRustSolanaProvenance(source)].filter(
+    (graph) => graph.summary.facts > 0 || graph.summary.assignmentFlowObligations > 0,
+  );
 }
 
 function countBy<T, K extends string>(items: T[], keyFn: (item: T) => K): Record<K, number> {
@@ -284,6 +318,14 @@ function applyVerificationStatuses(summary: AuditSummary, verifications: Verific
       finding.confirmationStatus = "confirmed-source";
     }
   }
+}
+
+function updateVerificationCoverage(summary: AuditSummary): void {
+  const verified = summary.findings.filter(
+    (finding) => finding.confirmationStatus === "confirmed-source" || finding.confirmationStatus === "confirmed-executable" || finding.verificationVerdict === "false-positive",
+  ).length;
+  summary.coverage.verifiedFindings = verified;
+  summary.coverage.unverifiedFindings = Math.max(0, summary.findings.length - verified);
 }
 
 function applyReproductionStatuses(summary: AuditSummary, reproductions: Reproduction[]): void {

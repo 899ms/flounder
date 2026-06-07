@@ -1,4 +1,4 @@
-import type { AuditLensPackDefinition, AuditorAgentDefinition, ContextRetrievalMode, ExplorationStrategy, FailureMode, ProjectContext, ReproductionMode } from "./types.js";
+import type { AuditLensPackDefinition, AuditorAgentDefinition, ContextRetrievalMode, ExplorationStrategy, FailureMode, ProjectContext, ReproductionMode, ScopeMode } from "./types.js";
 import { auditorAgentsFromLensPacks } from "./lens/context.js";
 
 export const DEFAULT_FAILURE_MODES: FailureMode[] = [
@@ -30,6 +30,7 @@ export interface AuditorConfig {
   sourcePaths: string[];
   corpusPaths: string[];
   outputDir: string;
+  historyDir?: string;
   provider: string;
   enumModel: string;
   auditModel: string;
@@ -40,6 +41,10 @@ export interface AuditorConfig {
   trials: number;
   maxWorkers: number;
   maxAuditItems?: number;
+  highImpactVerification: boolean;
+  highImpactMaxFindings: number;
+  scopeMode: ScopeMode;
+  baselineExplorationShare: number;
   maxTokens: number;
   thinkingLevel: "minimal" | "low" | "medium" | "high" | "xhigh";
   contextCharBudget: number;
@@ -81,6 +86,10 @@ export function defaultConfig(): AuditorConfig {
     maxNewItemsPerRound: 16,
     trials: 4,
     maxWorkers: 4,
+    highImpactVerification: true,
+    highImpactMaxFindings: 24,
+    scopeMode: "augment",
+    baselineExplorationShare: 0.25,
     maxTokens: 8000,
     thinkingLevel: "xhigh",
     contextCharBudget: 120_000,

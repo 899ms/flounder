@@ -64,6 +64,8 @@ export function analyzeReproductionCommandSafety(command: StructuredReproduction
   const rendered = [program, ...args].join(" ");
   const liveNetworkDecision = analyzeCommandSafety(rendered);
   if (liveNetworkDecision.blocked) return liveNetworkDecision;
+  const localNetworkDecision = analyzeStructuredLocalNetworkSafety(args);
+  if (localNetworkDecision.blocked) return localNetworkDecision;
 
   if (program.length === 0 || program.includes("/") || program.includes("\\") || /[\s;&|`$<>]/.test(program)) {
     return {
@@ -86,6 +88,50 @@ export function analyzeReproductionCommandSafety(command: StructuredReproduction
     };
   }
 
+  return { blocked: false };
+}
+
+function analyzeStructuredLocalNetworkSafety(args: string[]): CommandSafetyDecision {
+  for (let idx = 0; idx < args.length; idx += 1) {
+    const arg = args[idx] ?? "";
+    const lower = arg.toLowerCase();
+    const valueFromEquals = valueAfterEquals(arg);
+    if (isRpcFlag(lower)) {
+      const value = valueFromEquals ?? args[idx + 1];
+      if (!value || !isLocalNetworkValue(value)) {
+        return {
+          blocked: true,
+          reason: "Blocked by full-stack-auditor guardrail: reproduction RPC and fork targets must be local-only.",
+          matchedAction: arg,
+        };
+      }
+    }
+    if (isNetworkFlag(lower)) {
+      const value = valueFromEquals ?? args[idx + 1];
+      if (value && !isLocalNetworkValue(value)) {
+        return {
+          blocked: true,
+          reason: "Blocked by full-stack-auditor guardrail: reproduction network targets must be local-only.",
+          matchedAction: arg,
+          matchedNetwork: value,
+        };
+      }
+    }
+    if (looksLikeRemoteUrl(arg) && !isLocalUrl(arg)) {
+      return {
+        blocked: true,
+        reason: "Blocked by full-stack-auditor guardrail: reproduction commands must not use remote RPC URLs.",
+        matchedNetwork: arg,
+      };
+    }
+    if (looksLikeRpcEnvReference(arg)) {
+      return {
+        blocked: true,
+        reason: "Blocked by full-stack-auditor guardrail: reproduction commands must not depend on RPC or secret environment references.",
+        matchedNetwork: arg,
+      };
+    }
+  }
   return { blocked: false };
 }
 
@@ -115,4 +161,43 @@ function isAllowedLocalTestCommand(program: string, args: string[]): boolean {
   if (name === "forge") return first === "test";
   if (name === "npx") return first === "hardhat" && second === "test";
   return false;
+}
+
+function isRpcFlag(input: string): boolean {
+  return input === "--fork-url" || input.startsWith("--fork-url=") || input === "--rpc-url" || input.startsWith("--rpc-url=") || input === "--rpc" || input.startsWith("--rpc=");
+}
+
+function isNetworkFlag(input: string): boolean {
+  return input === "--network" || input.startsWith("--network=");
+}
+
+function valueAfterEquals(input: string): string | undefined {
+  const idx = input.indexOf("=");
+  return idx === -1 ? undefined : input.slice(idx + 1);
+}
+
+function isLocalNetworkValue(input: string): boolean {
+  const lowered = input.toLowerCase();
+  if (["localhost", "127.0.0.1", "::1", "hardhat", "anvil", "foundry", "local", "devnet", "regtest"].includes(lowered)) return true;
+  if (isLocalUrl(input)) return true;
+  return false;
+}
+
+function looksLikeRemoteUrl(input: string): boolean {
+  return /^https?:\/\//i.test(input) || /^wss?:\/\//i.test(input);
+}
+
+function isLocalUrl(input: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
+}
+
+function looksLikeRpcEnvReference(input: string): boolean {
+  return /(?:^|[${_%])(?:[A-Z0-9_]*(?:RPC|ALCHEMY|INFURA|QUICKNODE|MORALIS|ETHERSCAN|PRIVATE_KEY|MNEMONIC|TOKEN|SECRET)[A-Z0-9_]*)/i.test(input);
 }

@@ -139,15 +139,22 @@ function parseFinding(text: string): TrialFinding {
       raw: text.slice(0, 4000),
     };
   }
+  const finding = Boolean(parsed.finding);
+  const title = String(parsed.title ?? "");
+  const description = String(parsed.description ?? "");
+  const evidence = String(parsed.evidence ?? "");
+  const fix = String(parsed.fix ?? "");
+  const needsMoreContext = !finding && looksLikeNeedsMoreContext([title, description, evidence, fix].join("\n"));
   return {
-    finding: Boolean(parsed.finding),
-    title: String(parsed.title ?? ""),
+    finding,
+    title,
     severity: normalizeSeverity(parsed.severity),
     confidence: normalizeConfidence(parsed.confidence),
-    description: String(parsed.description ?? ""),
-    evidence: String(parsed.evidence ?? ""),
+    description,
+    evidence,
     exploitSketch: String(parsed.exploitSketch ?? ""),
-    fix: String(parsed.fix ?? ""),
+    fix,
+    ...(needsMoreContext ? { needsMoreContext: true } : {}),
   };
 }
 
@@ -160,6 +167,10 @@ function normalizeConfidence(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(1, n));
+}
+
+function looksLikeNeedsMoreContext(input: string): boolean {
+  return /\b(?:needs? more context|missing context|not visible|not shown|source lines? (?:are )?missing|requires .*context|insufficient context|cannot determine)\b/i.test(input);
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

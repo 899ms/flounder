@@ -160,6 +160,65 @@ test("source index adds constraint setup context for narrow advice-assignment it
   assert.match(context, /region\.assign_advice/);
 });
 
+test("source index expands Solidity direct ranges to the containing function block", () => {
+  const doc = makeDoc("external/FeeLibV1.sol", 220, {
+    20: "contract FeeLibV1 {",
+    70: "    function applyFee(FeeParams memory params) external returns (uint64 amountOutSD) {",
+    71: "        uint64 amountInSD = params.amountInSD;",
+    72: "        amountOutSD = _calculateFee(params.dstEid, amountInSD);",
+    73: "        if (amountOutSD == 0) revert InvalidFee();",
+    74: "    }",
+    160: "    function unrelated() external {",
+    161: "        revert Unrelated();",
+    162: "    }",
+    200: "}",
+  });
+  const index = new SourceIndex([doc]);
+  const context = index.contextForItem(
+    {
+      id: "fee-body",
+      location: "external/FeeLibV1.sol:72",
+      securityProperty: "Fee calculation must preserve amount semantics.",
+      failureMode: "spec_impl_mismatch",
+      why: "The direct line sits inside a Solidity function.",
+    },
+    20_000,
+  );
+
+  assert.match(context, /function applyFee/);
+  assert.match(context, /amountOutSD = _calculateFee/);
+  assert.doesNotMatch(context, /function unrelated/);
+});
+
+test("source index resolves Solidity symbol names from non-line locations", () => {
+  const tokenMessaging = makeDoc("external/TokenMessaging.sol", 260, {
+    40: "contract TokenMessaging {",
+    92: "    function rideBus(RideBusParams calldata params) external returns (Ticket memory ticket) {",
+    93: "        ticket = _queuePassenger(params);",
+    94: "    }",
+    140: "    function _lzReceiveBus(Origin calldata origin, bytes32 guid, bytes calldata message) internal {",
+    141: "        _deliverBus(origin, guid, message);",
+    142: "    }",
+    220: "}",
+  });
+  const index = new SourceIndex([tokenMessaging]);
+  const trace = index.contextForItemWithTrace(
+    {
+      id: "bus-routing",
+      location: "external/TokenMessaging.sol:rideBus,_lzReceiveBus",
+      securityProperty: "Bus passengers must be routed to the intended Stargate.",
+      failureMode: "double_spend_nullifier",
+      why: "The model named functions instead of line ranges.",
+    },
+    20_000,
+  );
+
+  assert.match(trace.context, /function rideBus/);
+  assert.match(trace.context, /function _lzReceiveBus/);
+  assert.ok(trace.slices.some((slice) => slice.reason === "location symbol rideBus" && slice.included));
+  assert.ok(trace.slices.some((slice) => slice.reason === "location symbol _lzReceiveBus" && slice.included));
+});
+
 test("retrieval term helper separates context routing from findings", () => {
   const item = {
     id: "routing-only",

@@ -62,3 +62,51 @@ test("project profile summarizes multi-language security context", () => {
   assert.match(rendered, /Languages:/);
   assert.match(rendered, /Likely security domains:/);
 });
+
+test("project profile recognizes Solidity audit toolchain and EVM risk domains", () => {
+  const profile = profileProject([
+    {
+      path: "foundry.toml",
+      kind: "source",
+      content: "[profile.default]\nsrc = \"src\"\n",
+    },
+    {
+      path: "remappings.txt",
+      kind: "source",
+      content: "@openzeppelin/=lib/openzeppelin-contracts/\nforge-std/=lib/forge-std/src/\n",
+    },
+    {
+      path: "slither.config.json",
+      kind: "source",
+      content: "{\"filter_paths\":\"test\"}",
+    },
+    {
+      path: "contracts/UpgradeableVault.sol",
+      kind: "source",
+      content: `
+        import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+        contract UpgradeableVault is UUPSUpgradeable {
+          AggregatorV3Interface public priceFeed;
+          function initialize() public initializer {}
+          function depositWithPermit(bytes calldata sig) external {}
+          function withdraw(uint256 shares) external {
+            (, int256 answer,,,) = priceFeed.latestRoundData();
+          }
+          function _authorizeUpgrade(address impl) internal override onlyOwner {}
+        }
+      `,
+    },
+  ]);
+
+  assert.ok(profile.manifests.includes("Foundry manifest"));
+  assert.ok(profile.manifests.includes("Solidity remappings"));
+  assert.ok(profile.manifests.includes("Slither config"));
+  assert.ok(profile.frameworks.includes("Foundry"));
+  assert.ok(profile.frameworks.includes("OpenZeppelin/ERC standards"));
+  assert.ok(profile.frameworks.includes("Upgradeable proxy"));
+  assert.ok(profile.frameworks.includes("Oracle integration"));
+  assert.ok(profile.likelySecurityDomains.includes("smart contract upgradeability and storage safety"));
+  assert.ok(profile.likelySecurityDomains.includes("EVM signature and permit replay security"));
+  assert.ok(profile.likelySecurityDomains.includes("oracle and market manipulation risk"));
+  assert.ok(profile.entrypoints.includes("contracts/upgradeablevault.sol"));
+});

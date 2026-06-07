@@ -82,8 +82,15 @@ const SOURCE_BASENAMES = new Set([
   "composer.json",
   "mix.exs",
   "foundry.toml",
+  "remappings.txt",
   "hardhat.config.ts",
   "hardhat.config.js",
+  "hardhat.config.cjs",
+  "hardhat.config.mjs",
+  "slither.config.json",
+  "echidna.yaml",
+  "echidna.yml",
+  "medusa.json",
   "wrangler.toml",
 ]);
 

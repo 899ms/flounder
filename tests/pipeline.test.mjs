@@ -8,6 +8,7 @@ import { loadSource } from "../dist/ingest/source.js";
 import { MockAuditLlmClient } from "../dist/llm/mock.js";
 import { runPipeline } from "../dist/pipeline.js";
 import { runSeeders } from "../dist/seeders/index.js";
+import { importRunToProjectHistory, readProjectHistoryManifest, resolveProjectHistoryLatestRunDir } from "../dist/trace/history.js";
 import { resolveLastRunDir } from "../dist/trace/last-run.js";
 
 const root = path.resolve(".");
@@ -100,7 +101,7 @@ test("mock pipeline runs enumerate, audit, verify, and report end to end", async
   assert.equal(result.summary.coverage.bySeverity.high, 6);
 
   const verification = JSON.parse(await readFile(path.join(result.runDir, "verifications.json"), "utf8"));
-  assert.equal(verification.length, 2);
+  assert.equal(verification.length, 6);
   assert.equal(verification[0].verdict, "confirmed");
   assert.equal(result.summary.findings[0].confirmationStatus, "confirmed-source");
   const lensPacks = JSON.parse(await readFile(path.join(result.runDir, "lens_packs.json"), "utf8"));
@@ -149,6 +150,84 @@ test("mock pipeline runs enumerate, audit, verify, and report end to end", async
     const body = await readFile(path.join(result.runDir, artifact), "utf8");
     assertNoLocalAbsolutePath(body, artifact, [root, out]);
   }
+});
+
+test("project history captures runs and reusable material indexes", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-history-"));
+  const cfg = defaultConfig();
+  cfg.portfolioEnumeration = false;
+  cfg.targetName = "test-history";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.localChecklistSeeders = true;
+
+  const result = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 1 });
+  const manifest = await readProjectHistoryManifest({ outputDir: out, targetName: cfg.targetName });
+  assert.ok(manifest);
+  assert.equal(manifest.aggregate.totalRuns, 1);
+  assert.equal(manifest.aggregate.findingsTotal, result.summary.findings.length);
+  assert.equal(manifest.aggregate.materialsTotal, manifest.materials.length);
+  assert.equal(path.isAbsolute(manifest.latestRunDir), false);
+  assert.equal(await resolveProjectHistoryLatestRunDir({ outputDir: out, targetName: cfg.targetName }), result.runDir);
+  assert.ok(manifest.materials.some((material) => material.kind === "project-learning"));
+  assert.ok(manifest.materials.some((material) => material.kind === "model-call"));
+  assert.ok(manifest.materials.some((material) => material.kind === "report"));
+
+  const projectDir = path.join(out, "history", "test-history");
+  const manifestBody = await readFile(path.join(projectDir, "manifest.json"), "utf8");
+  const materialsBody = await readFile(path.join(projectDir, "materials", "index.json"), "utf8");
+  assertNoLocalAbsolutePath(manifestBody, "history manifest", [root, out]);
+  assertNoLocalAbsolutePath(materialsBody, "materials index", [root, out]);
+
+  const importedHistoryDir = path.join(out, "imported-history-root");
+  const imported = await importRunToProjectHistory({
+    outputDir: out,
+    historyDir: importedHistoryDir,
+    targetName: "imported-history",
+    runDir: result.runDir,
+  });
+  const importedLatest = await resolveProjectHistoryLatestRunDir({
+    outputDir: out,
+    historyDir: importedHistoryDir,
+    targetName: "imported-history",
+  });
+  assert.equal(importedLatest, path.join(importedHistoryDir, "imported-history", "runs", path.basename(result.runDir)));
+  assert.equal(imported.latestRunDir, `runs/${path.basename(result.runDir)}`);
+  await stat(path.join(importedLatest, "checklist.json"));
+  await stat(path.join(importedHistoryDir, "imported-history", "materials", "index.json"));
+
+  const legacyRunDir = path.join(out, "legacy-run");
+  await mkdir(legacyRunDir, { recursive: true });
+  await writeFile(
+    path.join(legacyRunDir, "summary.json"),
+    JSON.stringify({ coverage: { itemsTotal: 1, itemsWithFinding: 0, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 } }, findings: [] }, null, 2),
+  );
+  await writeFile(
+    path.join(legacyRunDir, "checklist.json"),
+    JSON.stringify(
+      [
+        {
+          id: "legacy-entrypoint",
+          location: "external/foo.sol (listed entrypoint; source not loaded)",
+          securityProperty: "Legacy entrypoint locations should still aggregate by file.",
+          failureMode: "missing_constraint",
+          why: "Regression fixture for parenthesized location notes.",
+        },
+      ],
+      null,
+      2,
+    ),
+  );
+  await writeFile(path.join(legacyRunDir, "audit_results.json"), JSON.stringify([], null, 2));
+  await writeFile(path.join(legacyRunDir, "events.jsonl"), `${JSON.stringify({ kind: "run_start", ts: new Date().toISOString() })}\n`);
+  const legacy = await importRunToProjectHistory({
+    outputDir: out,
+    historyDir: importedHistoryDir,
+    targetName: "legacy-history",
+    runDir: legacyRunDir,
+  });
+  assert.deepEqual(legacy.runs[0].sourceFiles, ["external/foo.sol"]);
 });
 
 test("model-only mode requires checklist items from model enumeration", async () => {
@@ -398,12 +477,61 @@ test("resume mode retries model-error items from the same round", async () => {
   assert.equal(resumed.summary.coverage.itemsTotal, 3);
   assert.equal(resumed.summary.coverage.itemsWithFinding, 3);
   const retryResults = JSON.parse(await readFile(path.join(first.runDir, "round_2_audit_results.json"), "utf8"));
-  assert.equal(retryResults.length, 1);
-  assert.equal(retryResults[0].item.id, failed.item.id);
-  assert.equal(retryResults[0].trials[0].modelError, undefined);
+  assert.equal(retryResults.length, 2);
+  assert.ok(retryResults.some((result) => result.item.id === failed.item.id));
+  assert.ok(retryResults.every((result) => result.trials.every((trial) => trial.modelError === undefined)));
   const resumeState = JSON.parse(await readFile(path.join(first.runDir, "resume_state.json"), "utf8"));
   assert.equal(resumeState.completedRounds, 1);
-  assert.equal(resumeState.pendingRoundItems, 1);
+  assert.equal(resumeState.pendingRoundItems, 2);
+});
+
+test("resume mode retries parse-error items from the same round", async () => {
+  const out = await mkdtemp(path.join(os.tmpdir(), "fsa-parse-error-resume-"));
+  const cfg = defaultConfig();
+  cfg.portfolioEnumeration = false;
+  cfg.targetName = "test-parse-error-resume";
+  cfg.sourcePaths = [fixtures];
+  cfg.outputDir = out;
+  cfg.trials = 1;
+  cfg.rounds = 2;
+  cfg.localChecklistSeeders = false;
+
+  const first = await runPipeline(cfg, { llm: new MockAuditLlmClient(), verifyTopK: 0 });
+  const resultsPath = path.join(first.runDir, "audit_results.json");
+  const results = JSON.parse(await readFile(resultsPath, "utf8"));
+  const failed = results.find((result) => result.item.round === 2);
+  assert.ok(failed);
+  failed.nHits = 0;
+  failed.hitRate = 0;
+  failed.trials = [
+    {
+      finding: false,
+      title: "Parse error",
+      severity: "info",
+      confidence: 0,
+      description: "Synthetic parse error.",
+      evidence: "",
+      exploitSketch: "",
+      fix: "",
+      parseError: true,
+      raw: "not json",
+    },
+  ];
+  await writeFile(resultsPath, JSON.stringify(results, null, 2));
+
+  cfg.rounds = 1;
+  const resumed = await runPipeline(cfg, {
+    llm: new MockAuditLlmClient(),
+    verifyTopK: 0,
+    resumeRunDir: first.runDir,
+  });
+
+  assert.equal(resumed.summary.coverage.itemsTotal, 3);
+  assert.equal(resumed.summary.coverage.itemsNeedingRetry, 0);
+  const retryResults = JSON.parse(await readFile(path.join(first.runDir, "round_2_audit_results.json"), "utf8"));
+  assert.equal(retryResults.length, 2);
+  assert.ok(retryResults.some((result) => result.item.id === failed.item.id));
+  assert.ok(retryResults.every((result) => result.trials.every((trial) => trial.parseError === undefined)));
 });
 
 class BudgetedRoundsLlmClient {

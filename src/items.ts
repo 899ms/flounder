@@ -33,7 +33,7 @@ export function normalizeAuditItem(raw: RawAuditItem, round?: number): AuditItem
   if (!location || !securityProperty || !failureMode) return undefined;
   const why = raw.why?.trim() || portfolioWhy(raw) || "Enumerated by model.";
   const item: AuditItem = {
-    id: raw.id?.trim() || slug(`${failureMode}-${location}`),
+    id: slug(raw.id?.trim() || "") || slug(`${failureMode}-${location}`) || "item",
     location,
     securityProperty,
     failureMode: failureMode as AuditItem["failureMode"],
@@ -114,5 +114,5 @@ function canonicalText(input: string): string {
 }
 
 function slug(input: string): string {
-  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+  return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
 }

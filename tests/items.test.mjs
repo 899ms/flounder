@@ -56,6 +56,19 @@ test("normalizer accepts portfolio-style model item schemas", () => {
   assert.deepEqual(normalized.specRefs, ["book: scalar mul"]);
 });
 
+test("normalizer sanitizes model-provided item ids before artifact use", () => {
+  const normalized = normalizeAuditItem({
+    id: "../reports/critical finding",
+    location: "src/target.sol:10",
+    securityProperty: "External callers must not bypass authorization.",
+    failureMode: "access_control",
+    why: "Regression fixture for untrusted model ids.",
+  });
+
+  assert.ok(normalized);
+  assert.equal(normalized.id, "reports-critical-finding");
+});
+
 function item(id, location) {
   return {
     id,

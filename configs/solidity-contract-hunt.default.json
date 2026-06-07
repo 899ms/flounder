@@ -1,0 +1,466 @@
+{
+  "targetName": "solidity-contract-hunt",
+  "sourcePaths": [],
+  "corpusPaths": [],
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "thinkingLevel": "xhigh",
+  "rounds": 3,
+  "explorationStrategy": "hybrid",
+  "maxNewItemsPerRound": 32,
+  "trials": 4,
+  "maxWorkers": 4,
+  "maxAuditItems": 160,
+  "highImpactVerification": true,
+  "highImpactMaxFindings": 48,
+  "scopeMode": "augment",
+  "baselineExplorationShare": 0.25,
+  "maxTokens": 9000,
+  "contextCharBudget": 220000,
+  "contextRetrieval": "source-index+qmd",
+  "qmdCommand": "qmd",
+  "qmdLimit": 10,
+  "qmdMinScore": 0.25,
+  "qmdTimeoutMs": 60000,
+  "qmdCollections": [],
+  "portfolioEnumeration": true,
+  "portfolioMaxItems": 32,
+  "projectLearning": true,
+  "dynamicLensDiscovery": true,
+  "localChecklistSeeders": false,
+  "reproductionMode": "off",
+  "reproductionMaxCommands": 3,
+  "reproductionCommandTimeoutMs": 180000,
+  "dryRun": false,
+  "projectContext": {
+    "summary": "Default authorized Solidity and EVM smart-contract audit profile. Replace or extend this context with the target protocol's assets, deployed components, actors, invariants, and out-of-scope notes before high-stakes runs.",
+    "criticalAssets": [
+      "custodied or protocol-owned token balances",
+      "vault shares, LP tokens, debt, collateral, reward, and fee accounting",
+      "admin, keeper, guardian, operator, pauser, timelock, and governance authority",
+      "proxy implementation, initializer, and storage-layout integrity",
+      "oracle-dependent pricing, liquidation, mint, redeem, swap, and settlement decisions",
+      "signature, permit, cross-chain message, and delegated-action authorization",
+      "public and external entrypoints that mutate state or move assets"
+    ],
+    "attackerCapabilities": [
+      "A malicious contract can call public or external entrypoints, re-enter through callbacks, return false or malformed token behavior, and manipulate transaction ordering.",
+      "A privileged or semi-privileged actor may call admin, keeper, oracle, upgrade, pause, rescue, or governance paths within the target's threat model.",
+      "A market participant may use flash liquidity, stale or manipulated prices, rounding boundaries, donation attacks, slippage gaps, and liquidation edge cases.",
+      "A signer or relayer may replay, malleate, front-run, or redirect signatures, permits, cross-chain messages, and delegated actions when binding is incomplete."
+    ],
+    "trustBoundaries": [
+      "externally callable function to authorization, lifecycle, and state-transition checks",
+      "external call or token callback to finalized local accounting",
+      "token balance movement to internal credit, share, debt, and fee accounting",
+      "oracle read to value-sensitive state transition",
+      "signature or cross-chain message to domain, nonce, deadline, chain id, and target contract binding",
+      "proxy admin or initializer path to implementation code and storage layout"
+    ],
+    "securityInvariants": [
+      "Asset movement, share minting, debt changes, rewards, and fee accrual must conserve value under nonstandard ERC20 behavior and rounding boundaries.",
+      "Every privileged, upgrade, pause, rescue, keeper, and governance path must enforce the intended caller and lifecycle boundary at the point of mutation.",
+      "External calls must not allow callbacks to observe or mutate inconsistent accounting state.",
+      "Oracle-dependent decisions must validate freshness, sign, decimals, liveness, and manipulation assumptions before state changes.",
+      "Signatures, permits, and cross-chain messages must bind the exact action, signer, nonce, deadline, chain id, and verifying contract.",
+      "Upgradeable contracts must protect initialization, authorization, implementation compatibility, and storage layout."
+    ],
+    "focusAreas": [
+      "public and external mutating entrypoints",
+      "asset transfer, mint, burn, deposit, withdraw, borrow, repay, swap, liquidation, reward, and fee paths",
+      "external calls, callbacks, hooks, fallback, receive, and delegatecall",
+      "proxy, initializer, implementation, storage gap, and upgrade authorization",
+      "oracle, TWAP, sequencer, decimal, stale-price, and market-manipulation assumptions",
+      "permit, EIP-712, nonce, deadline, domain separator, and delegated execution",
+      "governance, timelock, role, pause, rescue, keeper, and emergency paths",
+      "cross-chain message validation, replay protection, source-chain binding, and receiver authorization"
+    ],
+    "outOfScope": [
+      "public-network transactions",
+      "broadcasting payloads",
+      "credential harvesting",
+      "third-party systems outside the authorized audit scope",
+      "value-extraction optimization beyond local proof of the invariant break"
+    ],
+    "scenarioGuidance": [
+      "Treat deterministic profiles, source indexes, provenance facts, tool outputs, and local seeders as planning evidence only.",
+      "Prioritize fund-impacting, authorization-bypass, upgradeability, oracle-manipulation, signature-replay, and invariant-break findings over low-impact style issues.",
+      "Use local Foundry, Hardhat, invariant, fuzz, forked-node, or fixture-based reproduction only after a model-backed finding is source-confirmed."
+    ]
+  },
+  "lensPacks": [
+    {
+      "id": "evm-entrypoint-auth-lifecycle",
+      "displayName": "EVM Entrypoint Authorization And Lifecycle",
+      "description": "Audit public and external entrypoints, modifiers, roles, pause states, keepers, guardians, timelocks, and emergency powers.",
+      "failureModes": [
+        "access_control",
+        "privilege_boundary",
+        "input_validation",
+        "evm_governance_timelock",
+        "evm_governance_payload_execution"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_governance_timelock",
+          "id": "evm-governance-timelock-auditor",
+          "displayName": "EVM Governance And Timelock Auditor",
+          "guidance": "Trace governance, timelock, guardian, keeper, pauser, rescue, and emergency powers from caller identity to the exact state mutation. Check delay, queue/execute/cancel binding, role revocation, function selector binding, target binding, and bypass paths."
+        },
+        {
+          "failureMode": "evm_governance_payload_execution",
+          "id": "evm-governance-payload-execution-auditor",
+          "displayName": "EVM Governance Payload Execution Auditor",
+          "guidance": "Trace plotted, queued, or whitelisted governance payloads from approval to permissionless execution. Check payload address, codehash, selector, deadline, executability predicate, replacement/drop semantics, delegatecall storage context, reentrancy, and post-execution authority checks."
+        }
+      ],
+      "enumerationGuidance": [
+        "Enumerate every externally callable mutating function and its nearest authorization, pause, lifecycle, and role boundary.",
+        "Create separate items for keeper, guardian, owner, governance, timelock, rescue, pause, and upgrade powers when they mutate different assets or invariants.",
+        "For governance payload executors, create separate items for payload address/codehash binding, deadline and executable-window checks, delegatecall storage context, reentrancy, replacement/drop behavior, and authority preservation after execution."
+      ],
+      "auditGuidance": [
+        "Do not accept a modifier name as proof; identify the exact caller, role, target object, selector, lifecycle state, and storage predicate checked before mutation.",
+        "Check alternate entrypoints, internal helpers reachable from multiple roles, initialization windows, and emergency paths.",
+        "When a governance-approved payload is trusted by policy, separate out-of-scope malicious-payload assumptions from in-scope executor bugs that can run the wrong payload, bypass timing, or mutate authority outside the intended execution boundary."
+      ]
+    },
+    {
+      "id": "evm-value-share-accounting",
+      "displayName": "EVM Value, Share, And Token Accounting",
+      "description": "Audit value conservation across ERC20/ERC721/ERC1155/ERC4626, vault shares, debt, collateral, rewards, fees, donations, and rounding boundaries.",
+      "failureModes": [
+        "supply_balance_integrity",
+        "integer_overflow",
+        "evm_token_accounting",
+        "evm_vault_share_accounting",
+        "evm_mev_slippage"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_token_accounting",
+          "id": "evm-token-accounting-auditor",
+          "displayName": "EVM Token Accounting Auditor",
+          "guidance": "Trace token movement against internal balance, credit, debt, fee, and reward accounting. Check fee-on-transfer, rebasing, missing return values, false returns, callbacks, decimals, dust, rounding, and balance-delta reconciliation."
+        },
+        {
+          "failureMode": "evm_vault_share_accounting",
+          "id": "evm-vault-share-accounting-auditor",
+          "displayName": "EVM Vault Share Accounting Auditor",
+          "guidance": "Audit ERC4626-like deposit, mint, withdraw, redeem, donation, preview, rounding, totalAssets, totalSupply, fee, and first-depositor behavior. Look for share inflation, stale accounting, asymmetric rounding, and asset/share mismatch."
+        },
+        {
+          "failureMode": "evm_mev_slippage",
+          "id": "evm-mev-slippage-auditor",
+          "displayName": "EVM MEV And Slippage Auditor",
+          "guidance": "Check whether swaps, mints, redeems, liquidations, auctions, and settlement paths enforce slippage, deadline, receiver, route, and price bounds under front-running, sandwiching, flash liquidity, and stale state."
+        }
+      ],
+      "enumerationGuidance": [
+        "Map each mint, burn, deposit, withdraw, transfer, swap, borrow, repay, reward, fee, and liquidation path to a concrete conservation invariant.",
+        "Enumerate balance-delta checks separately from nominal amount checks when nonstandard token behavior is possible."
+      ],
+      "auditGuidance": [
+        "Follow every branch that changes token balances, shares, debt, collateral, rewards, fees, or accounting indexes.",
+        "Treat rounding direction, zero amounts, first-depositor state, donations, decimals, and stale cached balances as first-class security conditions."
+      ]
+    },
+    {
+      "id": "evm-external-calls-callbacks",
+      "displayName": "EVM External Calls And Callbacks",
+      "description": "Audit low-level calls, delegatecall, token callbacks, hooks, fallback, receive, and reentrancy-sensitive state transitions.",
+      "failureModes": [
+        "reentrancy",
+        "evm_callback_reentrancy",
+        "dos_resource",
+        "input_validation"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_callback_reentrancy",
+          "id": "evm-callback-reentrancy-auditor",
+          "displayName": "EVM Callback Reentrancy Auditor",
+          "guidance": "Trace callbacks through ERC777, ERC721, ERC1155, ERC4626 hooks, fallback, receive, arbitrary callee code, and token transfer side effects. Check whether local accounting is finalized before the callback and whether cross-function reentry can violate an adjacent invariant."
+        }
+      ],
+      "enumerationGuidance": [
+        "Create items at the exact external call and include the preceding and following state writes, balance changes, and guard checks.",
+        "Separate same-function reentrancy, cross-function reentrancy, read-only reentrancy, delegatecall, and callback-induced denial of service when source evidence supports them."
+      ],
+      "auditGuidance": [
+        "Do not treat checks-effects-interactions comments or local naming as enforcement.",
+        "Verify return-value handling, revert behavior, gas assumptions, state finalization, and cross-entrypoint reachability."
+      ]
+    },
+    {
+      "id": "evm-oracle-market-manipulation",
+      "displayName": "EVM Oracle And Market Manipulation",
+      "description": "Audit Chainlink, TWAP, internal price, exchange-rate, sequencer, liquidation, and market-dependent assumptions.",
+      "failureModes": [
+        "evm_oracle_manipulation",
+        "supply_balance_integrity",
+        "spec_impl_mismatch"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_oracle_manipulation",
+          "id": "evm-oracle-manipulation-auditor",
+          "displayName": "EVM Oracle Manipulation Auditor",
+          "guidance": "Trace price reads into value-sensitive state. Check freshness, answeredInRound, updatedAt, positive price, decimals normalization, sequencer liveness, TWAP window, liquidity depth, flash manipulation, stale cached values, and fallback oracle behavior."
+        }
+      ],
+      "enumerationGuidance": [
+        "Enumerate every oracle read that affects minting, redemption, collateral, liquidation, swaps, accounting indexes, or access decisions.",
+        "Create separate items for freshness, decimals, sign, sequencer/liveness, manipulation resistance, and fallback behavior when each edge is visible."
+      ],
+      "auditGuidance": [
+        "Connect the exact oracle output to the downstream state transition and all normalization steps.",
+        "Check whether the source code assumes honest market state, deep liquidity, synchronized decimals, or immediate finality without enforcing it."
+      ]
+    },
+    {
+      "id": "evm-signatures-permits-delegation",
+      "displayName": "EVM Signatures, Permits, And Delegated Actions",
+      "description": "Audit EIP-712, permit, relayers, meta-transactions, delegated voting, approvals, and signature-based execution.",
+      "failureModes": [
+        "signature_replay",
+        "cryptographic_misuse",
+        "evm_bridge_message_replay"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_bridge_message_replay",
+          "id": "evm-bridge-message-replay-auditor",
+          "displayName": "EVM Bridge And Message Replay Auditor",
+          "guidance": "Trace cross-chain messages, signed messages, Merkle proofs, source chain ids, destination chain ids, message nonces, target contracts, replay bitmaps, finality assumptions, and receiver authorization. Check same-chain, cross-chain, fork, and contract-clone replay."
+        }
+      ],
+      "enumerationGuidance": [
+        "Map each signature or message acceptance path to the domain separator, nonce, deadline, signer, target contract, action, amount, recipient, and chain binding.",
+        "Create separate items for replay, signer confusion, malleability, relayer substitution, and delegated authority scope."
+      ],
+      "auditGuidance": [
+        "Do not treat ecrecover or ECDSA.recover as sufficient; verify exactly what was signed and how uniqueness is consumed.",
+        "Check chain id, verifying contract, implementation/proxy address, nonce invalidation, deadline, spender/operator binding, and fork behavior."
+      ]
+    },
+    {
+      "id": "evm-stablecoin-mint-redeem-staking",
+      "displayName": "EVM Stablecoin Mint, Redeem, And Staking",
+      "description": "Audit EIP-712/EIP-1271 mint/redeem orders, collateral custody routes, delegated settlement, stable price limits, ERC4626 staking, cooldown exits, restriction roles, and supply conservation.",
+      "failureModes": [
+        "supply_balance_integrity",
+        "signature_replay",
+        "evm_token_accounting",
+        "evm_vault_share_accounting",
+        "evm_mev_slippage",
+        "access_control",
+        "privilege_boundary",
+        "spec_impl_mismatch"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "signature_replay",
+          "id": "evm-mint-redeem-order-binding-auditor",
+          "displayName": "EVM Mint/Redeem Order Binding Auditor",
+          "guidance": "Trace every EIP-712, EIP-1271, mint, redeem, delegate, and settlement order from signed fields to nonce consumption and asset movement. Verify signer, contract-signature callback, benefactor whitelist, beneficiary approval, collateral asset, amount, price, custodian route, deadline, chain id, verifying contract, order type, and transfer direction are all bound before minting or releasing funds."
+        },
+        {
+          "failureMode": "supply_balance_integrity",
+          "id": "evm-collateral-custody-settlement-auditor",
+          "displayName": "EVM Collateral Custody And Settlement Auditor",
+          "guidance": "Trace collateral deposits, withdrawals, custodian transfers, reserve accounting, USDe/ENA mint and burn, stable price-delta normalization, per-asset/global max-mint/max-redeem throttles, and token balance deltas together. Check whether a route, custodian, token, decimals, caller-selected amount field, or transfer side effect can create unbacked supply, release collateral twice, or leave protocol insolvency."
+        },
+        {
+          "failureMode": "evm_vault_share_accounting",
+          "id": "evm-staking-cooldown-restriction-auditor",
+          "displayName": "EVM Staking Cooldown And Restriction Auditor",
+          "guidance": "Audit ERC4626 staking, vesting, reward donation, cooldown, silo withdrawal, restricted transfer, soft/full restriction, and emergency role paths. Check share/asset conversion, rounding, maxWithdraw/maxRedeem, approval transfer bypasses, cooldown ownership, and restrictions across direct and delegated exits."
+        }
+      ],
+      "enumerationGuidance": [
+        "Enumerate every mint, redeem, stake, unstake, cooldown, silo withdrawal, reward distribution, restriction, and delegated settlement path with its exact signed fields or caller role.",
+        "Create separate items for EIP-1271 contract signature callbacks, benefactor whitelist enforcement, beneficiary approval enforcement, nonce/deadline consumption, custodian route binding, collateral token binding, stable price-delta checks, max-mint/max-redeem limits, beneficiary/receiver binding, and share-to-asset conversion.",
+        "Map every USDe or share mint/burn to the corresponding collateral movement, backing assumption, cooldown claim, or reward distribution."
+      ],
+      "auditGuidance": [
+        "Do not assume an offchain signer, contract wallet, custodian, or gatekeeper is honest unless the bounty scope makes privileged compromise in scope. Focus on public callers, relayers, delegated actors, stale signed data, contract signature callbacks, and alternate onchain paths.",
+        "Treat known issues and privileged-address compromise exclusions as scope boundaries; look for additional code bugs that make the same impact reachable without relying only on privileged keys.",
+        "Check role and transfer restrictions at every asset-moving entrypoint, including approvals, ERC4626 previews, cooldown transfer of claim ownership, and inherited ERC20/ERC4626 hooks."
+      ]
+    },
+    {
+      "id": "evm-upgradeability-storage",
+      "displayName": "EVM Upgradeability And Storage Layout",
+      "description": "Audit UUPS, transparent proxies, beacons, delegatecall, initializer/reinitializer, storage gaps, and implementation compatibility.",
+      "failureModes": [
+        "evm_upgradeability_storage",
+        "access_control",
+        "privilege_boundary",
+        "spec_impl_mismatch"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_upgradeability_storage",
+          "id": "evm-upgradeability-storage-auditor",
+          "displayName": "EVM Upgradeability And Storage Auditor",
+          "guidance": "Trace proxy, implementation, initializer, reinitializer, upgrade authorization, proxiableUUID, beacon, admin, and storage layout assumptions. Check uninitialized implementations, reinitialization, selector clashes, storage collisions, missing gaps, changed variable order, and unauthorized upgrades."
+        }
+      ],
+      "enumerationGuidance": [
+        "Enumerate proxy admin paths, implementation initialization paths, upgrade functions, storage gap declarations, delegatecall sites, and inherited storage layout edges.",
+        "Create distinct items for authorization, initialization, implementation compatibility, and storage layout."
+      ],
+      "auditGuidance": [
+        "Check current implementation and upgrade path together; a locally safe function can be unsafe when reached through proxy storage.",
+        "Treat constructor-only initialization, missing _disableInitializers, and changed inherited storage as high-signal edges."
+      ]
+    },
+    {
+      "id": "evm-bridge-oft-liquidity-transport",
+      "displayName": "EVM Bridge, OFT, And Liquidity Transport",
+      "description": "Audit cross-chain message binding, LayerZero/OFT routes, asset IDs, credit movement, native drops, planner actions, and lock/burn/mint/release conservation.",
+      "failureModes": [
+        "evm_bridge_message_replay",
+        "evm_bridge_credit_accounting",
+        "evm_oft_supply_conservation",
+        "supply_balance_integrity",
+        "spec_impl_mismatch",
+        "access_control",
+        "privilege_boundary"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_bridge_credit_accounting",
+          "id": "evm-bridge-credit-accounting-auditor",
+          "displayName": "EVM Bridge Credit Accounting Auditor",
+          "guidance": "Trace local settlement, remote release, credit send/receive, pool balance, treasury fee, planner fee, shared-decimal conversion, dust removal, and path credit together. Check whether credits can be moved, minted, burned, or released without matching locked value or documented OFT semantics."
+        },
+        {
+          "failureMode": "evm_oft_supply_conservation",
+          "id": "evm-oft-supply-conservation-auditor",
+          "displayName": "EVM OFT Supply Conservation Auditor",
+          "guidance": "Audit OFT and bridge-pool mint, burn, lock, unlock, redeem, and retry paths for one-to-one supply conservation across chains. Check asset-id confusion, route confusion, failed outflow caching, retry replay, compose-message effects, and shared-decimal truncation."
+        },
+        {
+          "failureMode": "evm_bridge_message_replay",
+          "id": "evm-bridge-message-binding-auditor",
+          "displayName": "EVM Bridge Message Binding Auditor",
+          "guidance": "Trace message construction and receipt across source chain, destination chain, peer, endpoint, asset id, receiver bytes, amount, compose payload, ticket or nonce, and refund fields. Check same-chain, cross-chain, fork, clone, stale-peer, and malformed-payload replay or misdelivery."
+        }
+      ],
+      "enumerationGuidance": [
+        "Enumerate every LayerZero/OFT send and receive path with its payload fields, peer binding, asset-id lookup, receiver conversion, and amount conversion.",
+        "Create separate items for planner credit movement, bus ticket validation, taxi delivery, failed outflow retry, native-drop refunds, and treasury/planner fee isolation.",
+        "Map each lock/burn on the source side to the corresponding mint/unlock on the destination side and the credit or path accounting that authorizes it."
+      ],
+      "auditGuidance": [
+        "Do not treat trusted planner liveness as value-safety permission. Identify the exact code that prevents planner, driver, relayer, or owner actions from creating unauthorized spendable value.",
+        "Check shared-decimal rounding, dust removal, minAmount/slippage, failed token delivery caches, compose-message sender binding, and native-drop failure branches as value-affecting edges."
+      ]
+    },
+    {
+      "id": "solana-oft-governance-transport",
+      "displayName": "Solana OFT And Governance Transport",
+      "description": "Audit Anchor account constraints, PDA authority, SPL token accounting, LayerZero receive/send semantics, and cross-chain governance execution.",
+      "failureModes": [
+        "solana_account_constraint",
+        "solana_pda_authority",
+        "solana_oft_supply_conservation",
+        "solana_layerzero_replay",
+        "solana_governance_cpi_authority",
+        "supply_balance_integrity",
+        "access_control",
+        "spec_impl_mismatch",
+        "integer_overflow"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "solana_account_constraint",
+          "id": "solana-account-constraint-auditor",
+          "displayName": "Solana Account Constraint Auditor",
+          "guidance": "Trace Anchor account constraints for signer, mutability, owner, executable program, PDA seeds, bump, mint, token account owner, and close/realloc behavior. Check whether any attacker-supplied account can satisfy loose constraints while redirecting authority, assets, or governance execution."
+        },
+        {
+          "failureMode": "solana_pda_authority",
+          "id": "solana-pda-authority-auditor",
+          "displayName": "Solana PDA Authority Auditor",
+          "guidance": "Audit PDA seed domain separation, bump handling, signer seeds, program-id binding, and CPI authority. Check whether a PDA can be aliased across peers, mints, endpoints, or governance contexts, or sign for unintended token/program actions."
+        },
+        {
+          "failureMode": "solana_oft_supply_conservation",
+          "id": "solana-oft-supply-conservation-auditor",
+          "displayName": "Solana OFT Supply Conservation Auditor",
+          "guidance": "Trace SPL mint, burn, escrow, fee withdrawal, amount conversion, dust removal, min-amount, and LayerZero send/receive accounting. Check whether local token movement and remote OFT messages conserve supply and locked value across chains."
+        },
+        {
+          "failureMode": "solana_layerzero_replay",
+          "id": "solana-layerzero-message-binding-auditor",
+          "displayName": "Solana LayerZero Message Binding Auditor",
+          "guidance": "Trace endpoint, peer, remote EID, nonce or guid, payload type, clear/replay semantics, recipient, and amount binding before any mint, burn, transfer, or governance CPI. Check malformed payloads, stale peers, peer aliases, and replay or misdelivery edges."
+        },
+        {
+          "failureMode": "solana_governance_cpi_authority",
+          "id": "solana-governance-cpi-authority-auditor",
+          "displayName": "Solana Governance CPI Authority Auditor",
+          "guidance": "Audit cross-chain governance message parsing and execution. Bind remote sender, target program, instruction data, payer/context placeholders, account list ordering, writable/signing privileges, and CPI authority so messages cannot smuggle extra authority or execute against unintended accounts."
+        }
+      ],
+      "enumerationGuidance": [
+        "Enumerate each Anchor instruction with its account constraints, signer/PDA authority, state writes, token CPI, and LayerZero endpoint CPI.",
+        "Create distinct items for OFT send, lz_receive, fee withdrawal, pause/config updates, peer configuration, shared-decimal conversion, and governance message execution.",
+        "Map each Solana burn/escrow/mint/release edge to the corresponding EVM or remote-chain OFT accounting invariant where visible."
+      ],
+      "auditGuidance": [
+        "Do not treat successful Anchor type checking as proof of security. Verify every owner, signer, seed, bump, mint, and token account relationship needed by the invariant.",
+        "For governance execution, inspect the exact account list and placeholder replacement path; a message payload must not be able to choose accounts that grant authority beyond the approved remote action.",
+        "For OFT value flow, check shared-decimal rounding, dust removal, min amount, fee isolation, replay clearing, and pause semantics together."
+      ]
+    },
+    {
+      "id": "evm-lending-liquidation-solvency",
+      "displayName": "EVM Lending, Liquidation, And Solvency",
+      "description": "Audit collateral, debt, interest indexes, liquidation incentives, health factors, close factors, rounding, and solvency invariants.",
+      "failureModes": [
+        "evm_liquidation_solvency",
+        "supply_balance_integrity",
+        "integer_overflow",
+        "evm_oracle_manipulation"
+      ],
+      "auditorAgents": [
+        {
+          "failureMode": "evm_liquidation_solvency",
+          "id": "evm-liquidation-solvency-auditor",
+          "displayName": "EVM Liquidation And Solvency Auditor",
+          "guidance": "Trace borrow, repay, collateral, interest index, health factor, liquidation bonus, close factor, bad debt, and rounding paths. Check stale indexes, oracle decimals, partial liquidation math, self-liquidation, insolvency, dust, and protocol fee accounting."
+        }
+      ],
+      "enumerationGuidance": [
+        "Create items for each borrow, repay, collateral update, interest accrual, liquidation, bad-debt, and reserve accounting edge.",
+        "Prefer concrete health-factor and value-conservation properties over broad module-level lending checks."
+      ],
+      "auditGuidance": [
+        "Follow debt and collateral through time, rounding, stale index, oracle normalization, and partial liquidation branches.",
+        "Check whether every path preserves solvency or intentionally assigns loss to a documented reserve."
+      ]
+    },
+    {
+      "id": "evm-toolchain-and-dependency-trust",
+      "displayName": "EVM Toolchain And Dependency Trust",
+      "description": "Audit compiler, remappings, imported libraries, deployment scripts, generated addresses, and testing/fuzzing assumptions that affect contract safety.",
+      "failureModes": [
+        "dependency_supply_chain",
+        "spec_impl_mismatch",
+        "secret_exposure"
+      ],
+      "enumerationGuidance": [
+        "Enumerate security-relevant dependencies, remappings, compiler version assumptions, deployment scripts, generated address constants, and library linking surfaces.",
+        "Treat tests and fuzz configs as coverage evidence, not as proof that a property is enforced."
+      ],
+      "auditGuidance": [
+        "Check imported code and deployment/configuration code when it affects authority, addresses, initialization, upgrades, or critical constants.",
+        "Look for unsafe default addresses, leaked keys in scripts, stale generated artifacts, dependency confusion, and test-only assumptions leaking into production code."
+      ]
+    }
+  ]
+}
