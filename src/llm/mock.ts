@@ -51,6 +51,7 @@ function huntActionFor(user: string): string {
   if (!user.includes("action: bash")) {
     return action("Prove the missing constraint with a local-only test before claiming it.", "bash", {
       cmd: "node --test hunt_repro.test.mjs",
+      purpose: "confirm",
       expected_exit_code: 0,
       success_patterns: [HUNT_SUCCESS_PATTERN],
     });

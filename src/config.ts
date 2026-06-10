@@ -70,6 +70,8 @@ export interface AuditorConfig {
   reproductionMaxLogBytes: number;
   huntMaxSteps: number;
   huntScopeNote?: string;
+  huntPrepare: boolean;
+  huntPrepareTimeoutMs: number;
   dryRun: boolean;
 }
 
@@ -116,6 +118,8 @@ export function defaultConfig(): AuditorConfig {
     reproductionMaxFileBytes: 200_000,
     reproductionMaxLogBytes: 40_000,
     huntMaxSteps: 40,
+    huntPrepare: true,
+    huntPrepareTimeoutMs: 600_000,
     dryRun: false,
   };
 }

@@ -92,6 +92,16 @@ export function analyzeAgentBashCommandSafety(command: StructuredReproductionCom
   };
 }
 
+/**
+ * True only for an allowlisted local test/build runner — the kind of command that
+ * may upgrade a finding to confirmed-executable. Inspection commands (cat, rg,
+ * ls, …) are deliberately excluded so a model cannot mint executable confirmation
+ * by printing a success pattern from a file it wrote itself.
+ */
+export function isAgentConfirmCommand(command: StructuredReproductionCommand): boolean {
+  return isAllowedLocalTestCommand(command.program.trim(), command.args.map((arg) => String(arg)));
+}
+
 function analyzeStructuredCommandBaseSafety(command: StructuredReproductionCommand): CommandSafetyDecision {
   const program = command.program.trim();
   const args = command.args.map((arg) => String(arg));

@@ -169,6 +169,8 @@ async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig; verify
   cfg.huntMaxSteps = readIntFlag(args, "--max-steps") ?? cfg.huntMaxSteps;
   const scopeNote = readFlag(args, "--scope-note");
   if (scopeNote !== undefined) cfg.huntScopeNote = scopeNote;
+  if (args.includes("--no-prepare")) cfg.huntPrepare = false;
+  cfg.huntPrepareTimeoutMs = readIntFlag(args, "--prepare-timeout-ms") ?? cfg.huntPrepareTimeoutMs;
   if (args.includes("--dry-run")) cfg.dryRun = true;
   if (args.includes("--no-project-learning")) cfg.projectLearning = false;
   if (args.includes("--no-dynamic-lenses")) cfg.dynamicLensDiscovery = false;
@@ -264,6 +266,10 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
   if (typeof rawHuntMaxSteps === "number" && Number.isFinite(rawHuntMaxSteps)) cfg.huntMaxSteps = Math.max(1, Math.floor(rawHuntMaxSteps));
   const rawHuntScopeNote = raw.huntScopeNote ?? raw.hunt_scope_note;
   if (typeof rawHuntScopeNote === "string" && rawHuntScopeNote.trim().length > 0) cfg.huntScopeNote = rawHuntScopeNote.trim();
+  const rawHuntPrepare = raw.huntPrepare ?? raw.hunt_prepare;
+  if (typeof rawHuntPrepare === "boolean") cfg.huntPrepare = rawHuntPrepare;
+  const rawHuntPrepareTimeoutMs = raw.huntPrepareTimeoutMs ?? raw.hunt_prepare_timeout_ms;
+  if (typeof rawHuntPrepareTimeoutMs === "number" && Number.isFinite(rawHuntPrepareTimeoutMs)) cfg.huntPrepareTimeoutMs = Math.max(10_000, Math.floor(rawHuntPrepareTimeoutMs));
   const rawQmdTimeoutMs = raw.qmdTimeoutMs ?? raw.qmd_timeout_ms;
   if (typeof rawQmdTimeoutMs === "number" && Number.isFinite(rawQmdTimeoutMs)) cfg.qmdTimeoutMs = Math.max(1000, Math.floor(rawQmdTimeoutMs));
   const rawQmdCollections = raw.qmdCollections ?? raw.qmd_collections ?? raw.qmdCollection ?? raw.qmd_collection;
@@ -418,6 +424,9 @@ Options:
   --repro-timeout-ms <n>  timeout per local reproduction command, default 120000
   --max-steps <n>         hunt: max agent actions before stopping, default 40
   --scope-note <text>     hunt: one-line authorized-scope hint for the agent
+  --no-prepare            hunt: skip the toolchain warm-up (deps fetch/build) before the loop
+  --prepare-timeout-ms <n>
+                          hunt: per-command timeout for the warm-up, default 600000
   --mock-llm              run with the deterministic mock model
 `);
 }

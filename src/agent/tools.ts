@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AuditorConfig } from "../config.js";
-import { analyzeAgentBashCommandSafety } from "../security/policy.js";
+import { analyzeAgentBashCommandSafety, isAgentConfirmCommand } from "../security/policy.js";
 import {
   firstBlockedSandboxFile,
   matchSuccessPatterns,
@@ -13,7 +13,7 @@ import {
   writeSandboxFiles,
 } from "../security/sandbox.js";
 import type { RunLogger } from "../trace/logger.js";
-import type { ConfirmationStatus, Doc, ReproductionCommand, ReproductionFile, Severity } from "../types.js";
+import type { ConfirmationStatus, Doc, ReproductionCommand, ReproductionCommandResult, ReproductionFile, Severity } from "../types.js";
 import type { ProjectMemory } from "./memory.js";
 
 // Pi-style capability surface for hunt mode. The framework exposes generic
@@ -247,7 +247,7 @@ const editTool: AgentTool = {
 const bashTool: AgentTool = {
   name: "bash",
   description:
-    'Run one local inspection or test command in the copied sandbox workspace. args: {"cmd": string, "cwd"?: relative, "expected_exit_code"?: int, "success_patterns"?: [string], "timeout_ms"?: int}. Shell control operators, remote networks, destructive commands, and paths outside the workspace are blocked. A command is confirmation-eligible only when it exits as expected and all success_patterns appear in output.',
+    'Run one local command in the copied sandbox workspace. args: {"cmd": string, "purpose"?: "inspect"|"confirm" (default inspect), "cwd"?: relative, "expected_exit_code"?: int, "success_patterns"?: [string], "timeout_ms"?: int}. Shell control operators, remote networks, destructive commands, and paths outside the workspace are blocked. purpose=inspect is for exploration (ls/find/rg/cat/sed and reads) and never confirms anything. purpose=confirm must be a real local test/build runner (cargo test, forge test, go test, node --test, pytest, …) with success_patterns; only a confirm command that exits as expected with every success_pattern present becomes confirmation-eligible and citable as command_id for confirmed-executable.',
   async run(args, ctx) {
     const normalized = normalizeBashCommand(args, ctx.cfg);
     if ("error" in normalized) return { observation: normalized.error };
@@ -260,8 +260,14 @@ const bashTool: AgentTool = {
     const runId = `cmd${ctx.session.counters.command}`;
     const result = await runSandboxCommand(normalized.command, workspace.absolute, ctx.cfg.reproductionMaxLogBytes, ctx.cfg.sourcePaths);
     const exitMatched = result.exitCode === result.expectedExitCode && !result.timedOut;
-    const patternCheck = matchSuccessPatterns(normalized.successPatterns, [result]);
-    const passed = exitMatched && normalized.successPatterns.length > 0 && patternCheck.missing.length === 0 && patternCheck.matched.length > 0;
+    const isConfirm = normalized.purpose === "confirm";
+    const eligibleByType = isAgentConfirmCommand(normalized.command);
+    // Only a confirm-purpose run of an actual test/build command can pass. This is
+    // the gate that keeps an inspection command (e.g. cat of a model-authored file)
+    // from forging executable confirmation by echoing a success pattern.
+    const patternCheck = isConfirm ? matchSuccessPatterns(normalized.successPatterns, [result]) : { matched: [], missing: [] };
+    const passed =
+      isConfirm && eligibleByType && exitMatched && normalized.successPatterns.length > 0 && patternCheck.missing.length === 0 && patternCheck.matched.length > 0;
     const record: CommandRunRecord = {
       id: runId,
       passed,
@@ -276,6 +282,7 @@ const bashTool: AgentTool = {
     ctx.session.commandRuns.push(record);
     await ctx.logger.event("hunt_command_run", {
       runId,
+      purpose: normalized.purpose,
       passed,
       exitCode: result.exitCode,
       expectedExitCode: result.expectedExitCode,
@@ -285,15 +292,32 @@ const bashTool: AgentTool = {
     });
 
     const tail = (text: string): string => (text.length > 1600 ? `...${text.slice(-1600)}` : text);
-    const verdict = passed
-      ? `command ${runId}: CONFIRMATION-ELIGIBLE PASS; cite command_id="${runId}" in findings.json for confirmed-executable.`
-      : `command ${runId}: exit=${result.exitCode} expected=${result.expectedExitCode} timedOut=${result.timedOut}; not confirmation-eligible (${patternCheck.missing.join(" | ")}).`;
+    const verdict = !isConfirm
+      ? `command ${runId} (inspect): exit=${result.exitCode}${result.timedOut ? " timedOut" : ""}.`
+      : passed
+        ? `command ${runId}: CONFIRMATION-ELIGIBLE PASS; cite command_id="${runId}" in findings.json for confirmed-executable.`
+        : `command ${runId}: not confirmation-eligible (${confirmFailureReason(eligibleByType, normalized, exitMatched, result, patternCheck)}).`;
     return {
       observation: `${verdict}\n--- stdout ---\n${tail(result.stdout) || "(empty)"}\n--- stderr ---\n${tail(result.stderr) || "(empty)"}`,
-      meta: { runId, passed },
+      meta: { runId, passed, purpose: normalized.purpose },
     };
   },
 };
+
+function confirmFailureReason(
+  eligibleByType: boolean,
+  normalized: { command: ReproductionCommand; successPatterns: string[] },
+  exitMatched: boolean,
+  result: ReproductionCommandResult,
+  patternCheck: { matched: string[]; missing: string[] },
+): string {
+  if (!eligibleByType) {
+    return `purpose=confirm requires a local test/build runner (cargo test, forge test, go test, node --test, pytest, …); "${normalized.command.program}" is an inspection command, so it cannot confirm a finding`;
+  }
+  if (normalized.successPatterns.length === 0) return "purpose=confirm requires success_patterns describing the invariant break or patched regression";
+  if (!exitMatched) return `exit=${result.exitCode} expected=${result.expectedExitCode} timedOut=${result.timedOut}`;
+  return `missing success patterns: ${patternCheck.missing.join(" | ")}`;
+}
 
 async function ensureWorkspace(ctx: ToolContext): Promise<SandboxWorkspace | undefined> {
   if (ctx.session.workspace) return ctx.session.workspace;
@@ -362,7 +386,10 @@ function findingsJsonEntry(session: AgentSession): { path: string; content: stri
   return first ? { path: first[0], content: first[1] } : undefined;
 }
 
-function normalizeBashCommand(args: Record<string, unknown>, cfg: AuditorConfig): { raw: string; command: ReproductionCommand; successPatterns: string[] } | { error: string } {
+function normalizeBashCommand(
+  args: Record<string, unknown>,
+  cfg: AuditorConfig,
+): { raw: string; command: ReproductionCommand; successPatterns: string[]; purpose: "inspect" | "confirm" } | { error: string } {
   const raw = asString(args.cmd) ?? asString(args.command);
   if (!raw) return { error: 'error: "cmd" is required.' };
   if (raw.length > 4000) return { error: "error: command is too long." };
@@ -380,7 +407,7 @@ function normalizeBashCommand(args: Record<string, unknown>, cfg: AuditorConfig)
   }
   command.timeoutMs = clampInt(args.timeout_ms ?? args.timeoutMs, 1000, cfg.reproductionCommandTimeoutMs, cfg.reproductionCommandTimeoutMs);
   command.expectedExitCode = clampInt(args.expected_exit_code ?? args.expectedExitCode, 0, 255, 0);
-  return { raw, command, successPatterns: asStringList(args.success_patterns) };
+  return { raw, command, successPatterns: asStringList(args.success_patterns), purpose: asEnum(args.purpose, ["inspect", "confirm"], "inspect") };
 }
 
 function splitCommandLine(input: string): { argv: string[] } | { error: string } {

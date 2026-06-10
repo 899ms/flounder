@@ -38,11 +38,11 @@ flowchart TD
   OBS --> WINDOW["transcript windowing"]
   WINDOW --> LOOP
   MODEL -->|done| FINDINGS["parse findings.json"]
-  FINDINGS --> CONFIRM{"cites passed command_id?"}
-  CONFIRM -->|yes| EXEC["confirmed-executable"]
-  CONFIRM -->|no| SUSPECT["suspected"]
-  EXEC --> ARTIFACTS["write transcript, findings, commands, reports, history"]
-  SUSPECT --> ARTIFACTS
+  FINDINGS --> CONFIRM{"cites a passed confirm command_id?"}
+  CONFIRM -->|yes| EXEC["finding (confirmed-executable)"]
+  CONFIRM -->|no| HYP["hypothesis (unconfirmed)"]
+  EXEC --> ARTIFACTS["findings + reports + history"]
+  HYP --> HYPART["hypotheses artifact (no report)"]
 ```
 
 The loop has one protocol: the model emits exactly one JSON tool action per turn, or a `done` object after writing `findings.json`. The framework parses it, runs the requested tool, appends the observation, and calls the model again until the agent finishes or the step budget is exhausted.
@@ -63,17 +63,24 @@ Default tools:
 - `read`: read loaded source/corpus or files created in the sandbox.
 - `write`: write bounded files into the copied sandbox workspace.
 - `edit`: replace text in a file inside the copied sandbox workspace.
-- `bash`: run one policy-gated local inspection or test command in the copied workspace.
+- `bash`: run one policy-gated local command in the copied workspace. `purpose=inspect` (default) is for exploration (`ls`/`find`/`rg`/`cat`/`sed`/reads) and never confirms anything; `purpose=confirm` must be a real local test/build runner (`cargo test`, `forge test`, `go test`, `node --test`, `pytest`, …) with success patterns, and only it can mint confirmation.
 
 There are no default bug-class, dataflow, checklist, memory, or report tools. Optional priors should live as extension skills, prompt packs, corpus material, or package add-ons, not as default strategy in hunt mode.
 
 ## Confirmation Boundary
 
-The hard rule is that the model cannot confirm a bug by assertion.
+The hard rule is that the model cannot confirm a bug by assertion. Artifact semantics enforce it:
 
-`findings.json` records reach `confirmed-executable` only when they cite a `bash` `command_id` that passed with expected exit status and declared success patterns. Otherwise they record as `suspected`.
+- A **finding** is a candidate that cited a `bash` `command_id` of a `purpose=confirm` run that passed (expected exit status plus every declared success pattern). Only findings get `confirmed-executable` status, enter `hunt_findings.json`/`summary.findings`, and get a disclosure report.
+- A **hypothesis** is any other candidate. Hypotheses are recorded prominently in `hunt_hypotheses.json` and counted in `summary.coverage.hypotheses`, but they are not findings and get no report.
+
+Confirmation requires a real test/build runner. An inspection command (`cat`, `rg`, …) can never mint confirmation even with `purpose=confirm` and a matching success pattern — otherwise a model could forge proof by printing a success string from a file it wrote itself (`isAgentConfirmCommand` in `src/security/policy.ts`).
 
 `bash` routes through `src/security/sandbox.ts` and the command-safety policy. It must stay local-only: source inspection, unit tests, fixtures, local regtest/devnet, forked local nodes, or isolated harnesses. Public network broadcast, transfer, credential use, persistence, exploit optimization, destructive commands, and paths outside the copied workspace are blocked.
+
+## Verification Environment
+
+Confirmation is only reachable if the model's local test can compile and run, which on a real target requires the toolchain's dependencies. Before the loop, `src/agent/prepare.ts` warms the copied workspace once: it detects the toolchain (Cargo, Go, npm/pnpm/yarn, Foundry) and runs the project's own dependency fetch/build (`cargo fetch` + `cargo build --tests`, `go mod download`, `npm ci`, `forge build`, …) with network allowed and a generous timeout (`AuditorConfig.huntPrepareTimeoutMs`), populating the workspace-local caches (`CARGO_HOME`, `GOMODCACHE`, npm cache) that `runSandboxCommand` already points inside the workspace. Afterwards the model's `bash` test runs are incremental and can run offline and reproducibly. These commands are framework-chosen (not model input) and run the target's own dependency build scripts in the isolated workspace; the step is gated by `AuditorConfig.huntPrepare` (default on, `--no-prepare` to skip) and is a no-op when no manifest is present.
 
 The next hardening target is to make executable confirmation less self-certifying: a generic passing test or printed success string should not be enough to prove exploitability. Confirmation should prefer tests that touch target code, exercise the vulnerable condition, and match framework- or verifier-owned success signals.
 
@@ -82,10 +89,12 @@ The next hardening target is to make executable confirmation less self-certifyin
 Each hunt writes:
 
 - `hunt_transcript.json`: action/observation replay.
-- `hunt_findings.json`: raw agent findings.
+- `hunt_findings.json`: execution-confirmed findings only.
+- `hunt_hypotheses.json`: unconfirmed candidates.
 - `hunt_command_runs.json`: sandboxed local command records.
-- `summary.json`: ranked summary.
-- `report_<id>.md`: private disclosure drafts.
+- `hunt_prepare.json`: toolchain warm-up results (when a manifest was detected).
+- `summary.json`: ranked summary (findings) with `coverage.hypotheses`.
+- `report_<id>.md`: private disclosure drafts, for confirmed findings only.
 - `events.jsonl` and `calls/*.json`: trace and model calls.
 
 Per-target memory lives at `<out>/history/<target>/memory.jsonl`. Hunt surfaces recent memory at kickoff and automatically stores parsed findings for later runs.

@@ -119,10 +119,35 @@ test("read, write, edit, and bash operate on loaded material and the copied work
       path: "hunt_repro.test.mjs",
       content: "import test from 'node:test';\n\ntest('local harness success', () => {});\n",
     }, ctx);
-    const run = await tool("bash").run({ cmd: "node --test hunt_repro.test.mjs", success_patterns: ["local harness success"] }, ctx);
+    const run = await tool("bash").run({ cmd: "node --test hunt_repro.test.mjs", purpose: "confirm", success_patterns: ["local harness success"] }, ctx);
     assert.match(run.observation, /CONFIRMATION-ELIGIBLE PASS/);
     assert.equal(ctx.session.commandRuns.length, 1);
     assert.equal(ctx.session.commandRuns[0].passed, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an inspection command cannot forge confirmation by printing a success pattern", async () => {
+  const dir = await tempDir();
+  try {
+    const cfg = defaultConfig();
+    cfg.sourcePaths = [fixtures];
+    const logger = await tempLogger(dir);
+    const ctx = { cfg, source: [], corpus: [], memory: new ProjectMemory(path.join(dir, "memory.jsonl")), logger, session: newSession() };
+
+    // The model writes a file that contains the success pattern, then tries to
+    // "confirm" by cat-ing it. cat is not a test command, so it must not pass.
+    await tool("write").run({ path: "fake_evidence.txt", content: "INVARIANT BROKEN\n" }, ctx);
+    const forged = await tool("bash").run({ cmd: "cat fake_evidence.txt", purpose: "confirm", success_patterns: ["INVARIANT BROKEN"] }, ctx);
+    assert.match(forged.observation, /not confirmation-eligible/i);
+    assert.match(forged.observation, /test\/build runner/i);
+    assert.equal(ctx.session.commandRuns.at(-1).passed, false, "inspection commands must never mint confirmation");
+
+    // The same inspection command as purpose=inspect is fine and just shows output.
+    const inspect = await tool("bash").run({ cmd: "cat fake_evidence.txt" }, ctx);
+    assert.match(inspect.observation, /\(inspect\)/);
+    assert.ok(!/not confirmation-eligible/i.test(inspect.observation), "inspect runs must not show a confirmation verdict");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -144,6 +169,24 @@ test("hunt produces an execution-confirmed finding and banks cross-run memory", 
     assert.equal(finding.confirmationStatus, "confirmed-executable");
     assert.equal(finding.failureMode, "autonomous", "hunt findings are not forced into a fixed taxonomy");
     assert.equal(summary.coverage.verifiedFindings, 1);
+    assert.equal(summary.coverage.unverifiedFindings, 0);
+    assert.equal(summary.coverage.hypotheses, 0, "the mock's single candidate is confirmed, so there are no hypotheses");
+
+    // Only confirmed candidates become findings; hypotheses are a separate artifact.
+    const findingsArtifact = JSON.parse(await readFile(path.join(runDir, "hunt_findings.json"), "utf8"));
+    assert.equal(findingsArtifact.length, 1);
+    const hypothesesArtifact = JSON.parse(await readFile(path.join(runDir, "hunt_hypotheses.json"), "utf8"));
+    assert.equal(hypothesesArtifact.length, 0);
+
+    // The fixture workspace has no toolchain manifest, so the warm-up is a no-op
+    // (no hunt_prepare.json) and never blocks an offline run.
+    let prepareWritten = true;
+    try {
+      await stat(path.join(runDir, "hunt_prepare.json"));
+    } catch {
+      prepareWritten = false;
+    }
+    assert.equal(prepareWritten, false, "warm-up must no-op when no manifest is present");
 
     const transcript = JSON.parse(await readFile(path.join(runDir, "hunt_transcript.json"), "utf8"));
     assert.equal(transcript.stoppedReason, "finished");

@@ -272,6 +272,9 @@ export interface AuditSummary {
     needsMoreContextTrials: number;
     verifiedFindings: number;
     unverifiedFindings: number;
+    // Unconfirmed candidates recorded separately from findings. A finding requires
+    // execution-grounded confirmation; everything else is a hypothesis.
+    hypotheses?: number;
   };
   findings: RankedFinding[];
 }

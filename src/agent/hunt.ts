@@ -8,8 +8,10 @@ import { writeLastRunPointer } from "../trace/last-run.js";
 import { RunLogger } from "../trace/logger.js";
 import type { AuditSummary, Doc, LlmClient, RankedFinding, Severity } from "../types.js";
 import { publicPath } from "../util/paths.js";
+import { prepareSandboxWorkspace } from "../security/sandbox.js";
 import { runHuntLoop } from "./loop.js";
 import { ProjectMemory } from "./memory.js";
+import { prepareWorkspaceToolchain } from "./prepare.js";
 import { buildTools, ingestFindingsFromScratch, newSession, type AgentFinding, type ToolContext } from "./tools.js";
 
 // Orchestrates one autonomous hunt: load authorized material, give the model the
@@ -57,6 +59,15 @@ export async function runHunt(
   const tools = buildTools();
   const ctx: ToolContext = { cfg, source, corpus, memory, logger, session };
 
+  // Warm-up guarantee: prepare the toolchain once (deps fetched/built) so the
+  // model's later test runs can actually compile and confirm. Create the shared
+  // workspace up front so prepare and the tools operate on the same copy.
+  if (cfg.huntPrepare && cfg.sourcePaths.length > 0) {
+    const workspace = await prepareSandboxWorkspace(cfg.sourcePaths, logger.runDir, "hunt/workspace");
+    session.workspace = workspace;
+    await prepareWorkspaceToolchain({ workspace, cfg, logger });
+  }
+
   const scopeNote = resolveScopeNote(cfg);
   // Surface prior-run lessons at kickoff: the most relevant notes for this scope,
   // falling back to the most recent ones so memory is always visible. The agent
@@ -83,24 +94,33 @@ export async function runHunt(
     await logger.event("hunt_findings_parse_errors", { errors: findingParse.errors.length });
   }
 
+  // Hard artifact semantics: only an execution-confirmed candidate is a finding.
+  // Everything else is a hypothesis. Hypotheses are surfaced as their own artifact
+  // (not buried), but they do not get disclosure reports and are not counted as
+  // findings — that is the whole point of the confirmation gate.
+  const confirmed = session.findings.filter((finding) => finding.confirmationStatus === "confirmed-executable");
+  const hypotheses = session.findings.filter((finding) => finding.confirmationStatus !== "confirmed-executable");
+
   await logger.artifact("hunt_transcript.json", { stoppedReason: loop.stoppedReason, steps: loop.steps });
-  await logger.artifact("hunt_findings.json", session.findings);
+  await logger.artifact("hunt_findings.json", confirmed);
+  await logger.artifact("hunt_hypotheses.json", hypotheses);
   await logger.artifact("hunt_command_runs.json", session.commandRuns);
 
-  const summary = buildSummary(session.findings, loop.steps);
+  const summary = buildSummary(confirmed, hypotheses, loop.steps);
   await logger.artifact("summary.json", summary);
 
   for (const finding of summary.findings) {
     await logger.artifact(reportArtifactName(finding.id), renderDisclosure(cfg.targetName, finding));
   }
 
-  await persistFindingMemory(memory, session.findings);
+  await persistFindingMemory(memory, confirmed, hypotheses);
 
   await logger.event("hunt_done", {
     stoppedReason: loop.stoppedReason,
     steps: loop.steps.length,
-    findings: summary.findings.length,
-    confirmedExecutable: summary.findings.filter((finding) => finding.confirmationStatus === "confirmed-executable").length,
+    findings: confirmed.length,
+    hypotheses: hypotheses.length,
+    confirmedExecutable: confirmed.length,
     commandRuns: session.commandRuns.length,
     finishSummary: session.finishSummary ?? "",
   });
@@ -125,33 +145,43 @@ export async function runHunt(
   return { runDir: logger.runDir, summary };
 }
 
-function buildSummary(findings: AgentFinding[], steps: { tool: string }[]): AuditSummary {
-  const ranked = findings.map(toRankedFinding).sort((a, b) => b.score - a.score);
+function buildSummary(confirmed: AgentFinding[], hypotheses: AgentFinding[], steps: { tool: string }[]): AuditSummary {
+  const ranked = confirmed.map(toRankedFinding).sort((a, b) => b.score - a.score);
   const bySeverity: Record<Severity, number> = { info: 0, low: 0, medium: 0, high: 0, critical: 0 };
   for (const finding of ranked) bySeverity[finding.severity] += 1;
-  const verified = ranked.filter((finding) => finding.confirmationStatus === "confirmed-executable").length;
   return {
     coverage: {
-      itemsTotal: ranked.length,
+      itemsTotal: ranked.length + hypotheses.length,
       itemsWithFinding: ranked.length,
       bySeverity,
       itemsNeedingRetry: 0,
       modelErrorTrials: steps.filter((step) => step.tool === "(model-error)").length,
       parseErrorTrials: steps.filter((step) => step.tool === "(parse-error)").length,
       needsMoreContextTrials: 0,
-      verifiedFindings: verified,
-      unverifiedFindings: Math.max(0, ranked.length - verified),
+      verifiedFindings: ranked.length,
+      unverifiedFindings: 0,
+      hypotheses: hypotheses.length,
     },
     findings: ranked,
   };
 }
 
-async function persistFindingMemory(memory: ProjectMemory, findings: AgentFinding[]): Promise<void> {
-  for (const finding of findings) {
+async function persistFindingMemory(memory: ProjectMemory, confirmed: AgentFinding[], hypotheses: AgentFinding[]): Promise<void> {
+  for (const finding of confirmed) {
     await memory.remember({
-      note: `${finding.title} (${finding.confirmationStatus}) at ${finding.location}: ${finding.description}`.slice(0, 600),
+      note: `${finding.title} (confirmed-executable) at ${finding.location}: ${finding.description}`.slice(0, 600),
       kind: "finding",
-      tags: ["hunt", finding.severity, finding.confirmationStatus],
+      tags: ["hunt", finding.severity, "confirmed-executable"],
+      sourceRef: finding.location,
+    });
+  }
+  // Remember hypotheses too, but as notes — a future run starts knowing which
+  // leads were explored without treating them as established findings.
+  for (const finding of hypotheses) {
+    await memory.remember({
+      note: `Unconfirmed hypothesis: ${finding.title} at ${finding.location}: ${finding.description}`.slice(0, 600),
+      kind: "note",
+      tags: ["hunt", "hypothesis", finding.severity],
       sourceRef: finding.location,
     });
   }
