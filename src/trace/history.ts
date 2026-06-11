@@ -16,12 +16,9 @@ export interface ProjectHistoryRun {
   sourcePaths: string[];
   corpusPaths: string[];
   provider?: string;
-  enumModel?: string;
   auditModel?: string;
-  verifyModel?: string;
   thinkingLevel?: string;
   rounds: number;
-  trials?: number;
   itemsTotal: number;
   auditedItems: number;
   findingsTotal: number;
@@ -223,12 +220,9 @@ async function historyRunFromRunDir(input: { projectDir: string; runDir: string;
     sourcePaths: cleanStringArray(runStart?.sourcePaths),
     corpusPaths: cleanStringArray(runStart?.corpusPaths),
     ...(typeof runStart?.provider === "string" ? { provider: runStart.provider } : {}),
-    ...(typeof runStart?.enumModel === "string" ? { enumModel: runStart.enumModel } : {}),
     ...(typeof runStart?.auditModel === "string" ? { auditModel: runStart.auditModel } : {}),
-    ...(typeof runStart?.verifyModel === "string" ? { verifyModel: runStart.verifyModel } : {}),
     ...(typeof runStart?.thinkingLevel === "string" ? { thinkingLevel: runStart.thinkingLevel } : {}),
     rounds: roundsFromChecklist(checklist, auditResults),
-    ...optionalTrials(auditResults),
     itemsTotal: summary.coverage.itemsTotal,
     auditedItems: auditResults.length,
     findingsTotal: summary.findings.length,
@@ -249,12 +243,9 @@ function historyRunFromPipeline(input: ProjectHistoryUpdateInput, projectDir: st
     sourcePaths: input.cfg.sourcePaths.map((sourcePath) => publicPath(sourcePath)),
     corpusPaths: input.cfg.corpusPaths.map((corpusPath) => publicPath(corpusPath)),
     provider: input.cfg.provider,
-    enumModel: input.cfg.enumModel,
     auditModel: input.cfg.auditModel,
-    verifyModel: input.cfg.verifyModel,
     thinkingLevel: input.cfg.thinkingLevel,
     rounds: input.completedRounds,
-    trials: input.cfg.trials,
     itemsTotal: input.summary.coverage.itemsTotal,
     auditedItems: input.results.length,
     findingsTotal: input.summary.findings.length,
@@ -517,16 +508,6 @@ function roundsFromChecklist(items: AuditItem[], results: AuditResult[]): number
     ...items.map((item) => cleanRound(item.round)),
     ...results.map((result) => cleanRound(result.item.round)),
   );
-}
-
-function trialsFromResults(results: AuditResult[]): number | undefined {
-  const maxTrials = Math.max(0, ...results.map((result) => result.nTrials));
-  return maxTrials > 0 ? maxTrials : undefined;
-}
-
-function optionalTrials(results: AuditResult[]): Pick<ProjectHistoryRun, "trials"> | Record<string, never> {
-  const trials = trialsFromResults(results);
-  return trials !== undefined ? { trials } : {};
 }
 
 function sourceFilesFromItems(items: AuditItem[]): string[] {

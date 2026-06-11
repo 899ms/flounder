@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { defaultConfig, type AuditorConfig } from "./config.js";
+import { defaultConfig, normalizeProjectContext, type AuditorConfig } from "./config.js";
 import { runHunt } from "./agent/hunt.js";
-import type { AuditorAgentDefinition } from "./types.js";
 import { MockAuditLlmClient } from "./llm/mock.js";
-import { normalizeLensPacks, normalizeProjectContext } from "./lens/context.js";
 import { importRunToProjectHistory, projectHistoryManifestPath } from "./trace/history.js";
 
 async function main(argv: string[]): Promise<void> {
@@ -34,7 +32,7 @@ async function main(argv: string[]): Promise<void> {
   throw new Error(`Unknown command: ${cmd}`);
 }
 
-async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig; verifyTopK: number }> {
+async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig }> {
   const cfg = defaultConfig();
   const configPath = readFlag(args, "--config");
   if (configPath) {
@@ -49,53 +47,20 @@ async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig; verify
   const historyDir = readFlag(args, "--history-dir");
   if (historyDir !== undefined) cfg.historyDir = historyDir;
   cfg.provider = readFlag(args, "--provider") ?? cfg.provider;
-  cfg.enumModel = readFlag(args, "--enum-model") ?? readFlag(args, "--model") ?? cfg.enumModel;
   cfg.auditModel = readFlag(args, "--audit-model") ?? readFlag(args, "--model") ?? cfg.auditModel;
-  cfg.verifyModel = readFlag(args, "--verify-model") ?? readFlag(args, "--model") ?? cfg.verifyModel;
-  cfg.rounds = readIntFlag(args, "--rounds") ?? cfg.rounds;
-  cfg.explorationStrategy = readStrategyFlag(args) ?? cfg.explorationStrategy;
-  cfg.maxNewItemsPerRound = readIntFlag(args, "--max-new-items-per-round") ?? cfg.maxNewItemsPerRound;
-  cfg.trials = readIntFlag(args, "--trials") ?? cfg.trials;
-  cfg.maxWorkers = readIntFlag(args, "--max-workers") ?? cfg.maxWorkers;
-  cfg.highImpactMaxFindings = readIntFlag(args, "--high-impact-max-findings") ?? cfg.highImpactMaxFindings;
-  if (args.includes("--no-high-impact-verification")) cfg.highImpactVerification = false;
-  cfg.scopeMode = readScopeModeFlag(args) ?? cfg.scopeMode;
-  const baselineExplorationShare = readNumberFlag(args, "--baseline-exploration-share");
-  if (baselineExplorationShare !== undefined) cfg.baselineExplorationShare = Math.max(0, Math.min(0.8, baselineExplorationShare));
-  const maxAuditItems = readIntFlag(args, "--max-items");
-  if (maxAuditItems !== undefined) cfg.maxAuditItems = maxAuditItems;
   cfg.maxTokens = readIntFlag(args, "--max-tokens") ?? cfg.maxTokens;
-  cfg.contextCharBudget = readIntFlag(args, "--context-chars") ?? cfg.contextCharBudget;
-  cfg.contextRetrieval = readRetrievalFlag(args) ?? cfg.contextRetrieval;
-  cfg.qmdCommand = readFlag(args, "--qmd-command") ?? cfg.qmdCommand;
-  cfg.qmdLimit = readIntFlag(args, "--qmd-limit") ?? cfg.qmdLimit;
-  cfg.qmdMinScore = readNumberFlag(args, "--qmd-min-score") ?? cfg.qmdMinScore;
-  cfg.qmdTimeoutMs = readIntFlag(args, "--qmd-timeout-ms") ?? cfg.qmdTimeoutMs;
-  const qmdCollections = readMultiFlag(args, "--qmd-collection");
-  if (qmdCollections.length > 0) cfg.qmdCollections = qmdCollections;
-  cfg.portfolioMaxItems = readIntFlag(args, "--portfolio-max-items") ?? cfg.portfolioMaxItems;
-  cfg.reproductionMode = readReproductionModeFlag(args) ?? cfg.reproductionMode;
-  cfg.reproductionMaxCommands = readIntFlag(args, "--repro-max-commands") ?? cfg.reproductionMaxCommands;
   cfg.reproductionCommandTimeoutMs = readIntFlag(args, "--repro-timeout-ms") ?? cfg.reproductionCommandTimeoutMs;
-  cfg.reproductionMaxFileBytes = readIntFlag(args, "--repro-max-file-bytes") ?? cfg.reproductionMaxFileBytes;
-  cfg.reproductionMaxLogBytes = readIntFlag(args, "--repro-max-log-bytes") ?? cfg.reproductionMaxLogBytes;
   cfg.huntMaxSteps = readIntFlag(args, "--max-steps") ?? cfg.huntMaxSteps;
   const scopeNote = readFlag(args, "--scope-note");
   if (scopeNote !== undefined) cfg.huntScopeNote = scopeNote;
   if (args.includes("--no-prepare")) cfg.huntPrepare = false;
   cfg.huntPrepareTimeoutMs = readIntFlag(args, "--prepare-timeout-ms") ?? cfg.huntPrepareTimeoutMs;
   if (args.includes("--dry-run")) cfg.dryRun = true;
-  if (args.includes("--no-project-learning")) cfg.projectLearning = false;
-  if (args.includes("--no-dynamic-lenses")) cfg.dynamicLensDiscovery = false;
-  if (args.includes("--no-portfolio-enumeration")) cfg.portfolioEnumeration = false;
-  if (cfg.dryRun && !args.includes("--no-local-seeders")) cfg.localChecklistSeeders = true;
-  if (args.includes("--local-seeders")) cfg.localChecklistSeeders = true;
-  if (args.includes("--no-local-seeders")) cfg.localChecklistSeeders = false;
   const thinking = readFlag(args, "--thinking");
   if (thinking === "minimal" || thinking === "low" || thinking === "medium" || thinking === "high" || thinking === "xhigh") {
     cfg.thinkingLevel = thinking;
   }
-  return { cfg, verifyTopK: readIntFlag(args, "--verify-top") ?? 3 };
+  return { cfg };
 }
 
 function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>): void {
@@ -107,73 +72,12 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
   if (typeof raw.historyDir === "string") cfg.historyDir = raw.historyDir;
   if (typeof raw.history_dir === "string") cfg.historyDir = raw.history_dir;
   if (typeof raw.provider === "string") cfg.provider = raw.provider;
-  if (typeof raw.enumModel === "string") cfg.enumModel = raw.enumModel;
   if (typeof raw.auditModel === "string") cfg.auditModel = raw.auditModel;
-  if (typeof raw.verifyModel === "string") cfg.verifyModel = raw.verifyModel;
-  if (typeof raw.model === "string") {
-    cfg.enumModel = raw.model;
-    cfg.auditModel = raw.model;
-    cfg.verifyModel = raw.model;
-  }
-  if (typeof raw.trials === "number" && Number.isFinite(raw.trials)) cfg.trials = Math.max(1, Math.floor(raw.trials));
-  if (typeof raw.rounds === "number" && Number.isFinite(raw.rounds)) cfg.rounds = Math.max(1, Math.floor(raw.rounds));
-  const rawStrategy = raw.explorationStrategy ?? raw.exploration_strategy ?? raw.strategy;
-  if (rawStrategy === "breadth" || rawStrategy === "depth" || rawStrategy === "hybrid") {
-    cfg.explorationStrategy = rawStrategy;
-  }
-  const rawMaxNewItemsPerRound = raw.maxNewItemsPerRound ?? raw.max_new_items_per_round;
-  if (typeof rawMaxNewItemsPerRound === "number" && Number.isFinite(rawMaxNewItemsPerRound)) {
-    cfg.maxNewItemsPerRound = Math.max(1, Math.floor(rawMaxNewItemsPerRound));
-  }
-  if (typeof raw.maxWorkers === "number" && Number.isFinite(raw.maxWorkers)) cfg.maxWorkers = Math.max(1, Math.floor(raw.maxWorkers));
-  const rawHighImpactVerification = raw.highImpactVerification ?? raw.high_impact_verification;
-  if (typeof rawHighImpactVerification === "boolean") cfg.highImpactVerification = rawHighImpactVerification;
-  const rawHighImpactMaxFindings = raw.highImpactMaxFindings ?? raw.high_impact_max_findings;
-  if (typeof rawHighImpactMaxFindings === "number" && Number.isFinite(rawHighImpactMaxFindings)) {
-    cfg.highImpactMaxFindings = Math.max(0, Math.floor(rawHighImpactMaxFindings));
-  }
-  const rawScopeMode = raw.scopeMode ?? raw.scope_mode;
-  if (rawScopeMode === "augment" || rawScopeMode === "restrict") cfg.scopeMode = rawScopeMode;
-  const rawBaselineExplorationShare = raw.baselineExplorationShare ?? raw.baseline_exploration_share;
-  if (typeof rawBaselineExplorationShare === "number" && Number.isFinite(rawBaselineExplorationShare)) {
-    cfg.baselineExplorationShare = Math.max(0, Math.min(0.8, rawBaselineExplorationShare));
-  }
-  const rawMaxAuditItems = raw.maxAuditItems ?? raw.max_audit_items;
-  if (typeof rawMaxAuditItems === "number" && Number.isFinite(rawMaxAuditItems)) cfg.maxAuditItems = Math.max(1, Math.floor(rawMaxAuditItems));
+  if (typeof raw.model === "string") cfg.auditModel = raw.model;
   if (typeof raw.maxTokens === "number" && Number.isFinite(raw.maxTokens)) cfg.maxTokens = Math.max(1000, Math.floor(raw.maxTokens));
-  if (typeof raw.contextCharBudget === "number" && Number.isFinite(raw.contextCharBudget)) {
-    cfg.contextCharBudget = Math.max(4000, Math.floor(raw.contextCharBudget));
-  }
-  const rawRetrieval = raw.contextRetrieval ?? raw.context_retrieval ?? raw.retrieval;
-  if (rawRetrieval === "source-index" || rawRetrieval === "source-index+qmd") cfg.contextRetrieval = rawRetrieval;
-  if (typeof raw.qmdCommand === "string") cfg.qmdCommand = raw.qmdCommand;
-  if (typeof raw.qmdLimit === "number" && Number.isFinite(raw.qmdLimit)) cfg.qmdLimit = Math.max(1, Math.floor(raw.qmdLimit));
-  if (typeof raw.qmdMinScore === "number" && Number.isFinite(raw.qmdMinScore)) cfg.qmdMinScore = Math.max(0, raw.qmdMinScore);
-  const rawPortfolioMaxItems = raw.portfolioMaxItems ?? raw.portfolio_max_items;
-  if (typeof rawPortfolioMaxItems === "number" && Number.isFinite(rawPortfolioMaxItems)) {
-    cfg.portfolioMaxItems = Math.max(1, Math.floor(rawPortfolioMaxItems));
-  }
-  const rawPortfolioEnumeration = raw.portfolioEnumeration ?? raw.portfolio_enumeration;
-  if (typeof rawPortfolioEnumeration === "boolean") cfg.portfolioEnumeration = rawPortfolioEnumeration;
-  const rawReproductionMode = raw.reproductionMode ?? raw.reproduction_mode ?? raw.repro;
-  if (rawReproductionMode === "off" || rawReproductionMode === "plan" || rawReproductionMode === "execute") {
-    cfg.reproductionMode = rawReproductionMode;
-  }
-  const rawReproductionMaxCommands = raw.reproductionMaxCommands ?? raw.reproduction_max_commands;
-  if (typeof rawReproductionMaxCommands === "number" && Number.isFinite(rawReproductionMaxCommands)) {
-    cfg.reproductionMaxCommands = Math.max(1, Math.floor(rawReproductionMaxCommands));
-  }
   const rawReproductionCommandTimeoutMs = raw.reproductionCommandTimeoutMs ?? raw.reproduction_command_timeout_ms;
   if (typeof rawReproductionCommandTimeoutMs === "number" && Number.isFinite(rawReproductionCommandTimeoutMs)) {
     cfg.reproductionCommandTimeoutMs = Math.max(1000, Math.floor(rawReproductionCommandTimeoutMs));
-  }
-  const rawReproductionMaxFileBytes = raw.reproductionMaxFileBytes ?? raw.reproduction_max_file_bytes;
-  if (typeof rawReproductionMaxFileBytes === "number" && Number.isFinite(rawReproductionMaxFileBytes)) {
-    cfg.reproductionMaxFileBytes = Math.max(1000, Math.floor(rawReproductionMaxFileBytes));
-  }
-  const rawReproductionMaxLogBytes = raw.reproductionMaxLogBytes ?? raw.reproduction_max_log_bytes;
-  if (typeof rawReproductionMaxLogBytes === "number" && Number.isFinite(rawReproductionMaxLogBytes)) {
-    cfg.reproductionMaxLogBytes = Math.max(1000, Math.floor(rawReproductionMaxLogBytes));
   }
   const rawHuntMaxSteps = raw.huntMaxSteps ?? raw.hunt_max_steps;
   if (typeof rawHuntMaxSteps === "number" && Number.isFinite(rawHuntMaxSteps)) cfg.huntMaxSteps = Math.max(1, Math.floor(rawHuntMaxSteps));
@@ -183,36 +87,13 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
   if (typeof rawHuntPrepare === "boolean") cfg.huntPrepare = rawHuntPrepare;
   const rawHuntPrepareTimeoutMs = raw.huntPrepareTimeoutMs ?? raw.hunt_prepare_timeout_ms;
   if (typeof rawHuntPrepareTimeoutMs === "number" && Number.isFinite(rawHuntPrepareTimeoutMs)) cfg.huntPrepareTimeoutMs = Math.max(10_000, Math.floor(rawHuntPrepareTimeoutMs));
-  const rawQmdTimeoutMs = raw.qmdTimeoutMs ?? raw.qmd_timeout_ms;
-  if (typeof rawQmdTimeoutMs === "number" && Number.isFinite(rawQmdTimeoutMs)) cfg.qmdTimeoutMs = Math.max(1000, Math.floor(rawQmdTimeoutMs));
-  const rawQmdCollections = raw.qmdCollections ?? raw.qmd_collections ?? raw.qmdCollection ?? raw.qmd_collection;
-  if (Array.isArray(rawQmdCollections) && rawQmdCollections.every((value) => typeof value === "string")) {
-    cfg.qmdCollections = rawQmdCollections.filter((value) => value.trim().length > 0);
-  } else if (typeof rawQmdCollections === "string" && rawQmdCollections.trim().length > 0) {
-    cfg.qmdCollections = [rawQmdCollections.trim()];
-  }
   if (raw.thinkingLevel === "minimal" || raw.thinkingLevel === "low" || raw.thinkingLevel === "medium" || raw.thinkingLevel === "high" || raw.thinkingLevel === "xhigh") {
     cfg.thinkingLevel = raw.thinkingLevel;
   }
-  if (Array.isArray(raw.failureModes) && raw.failureModes.every((value) => typeof value === "string")) {
-    cfg.failureModes = raw.failureModes as AuditorConfig["failureModes"];
-  }
-  if (Array.isArray(raw.auditorAgents)) {
-    cfg.auditorAgents = cleanAuditorAgents(raw.auditorAgents);
-  }
-  if ("lensPacks" in raw || "lens_packs" in raw) cfg.lensPacks = normalizeLensPacks(raw.lensPacks ?? raw.lens_packs);
   if ("projectContext" in raw || "project_context" in raw) {
     cfg.projectContext = normalizeProjectContext(raw.projectContext ?? raw.project_context) ?? cfg.projectContext;
   }
-  if (typeof raw.projectLearning === "boolean") cfg.projectLearning = raw.projectLearning;
-  if (typeof raw.dynamicLensDiscovery === "boolean") cfg.dynamicLensDiscovery = raw.dynamicLensDiscovery;
-  if (typeof raw.localChecklistSeeders === "boolean") cfg.localChecklistSeeders = raw.localChecklistSeeders;
   if (typeof raw.dryRun === "boolean") cfg.dryRun = raw.dryRun;
-}
-
-function cleanAuditorAgents(value: unknown[]): AuditorAgentDefinition[] {
-  const packs = normalizeLensPacks([{ id: "config-agents", auditorAgents: value }]);
-  return packs[0]?.auditorAgents ?? [];
 }
 
 function hasFlag(args: string[], name: string): boolean {
@@ -231,33 +112,6 @@ function readIntFlag(args: string[], name: string): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function readNumberFlag(args: string[], name: string): number | undefined {
-  const value = readFlag(args, name);
-  if (!value) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function readStrategyFlag(args: string[]): AuditorConfig["explorationStrategy"] | undefined {
-  const value = readFlag(args, "--strategy") ?? readFlag(args, "--exploration-strategy");
-  return value === "breadth" || value === "depth" || value === "hybrid" ? value : undefined;
-}
-
-function readRetrievalFlag(args: string[]): AuditorConfig["contextRetrieval"] | undefined {
-  const value = readFlag(args, "--retrieval") ?? readFlag(args, "--context-retrieval");
-  return value === "source-index" || value === "source-index+qmd" ? value : undefined;
-}
-
-function readScopeModeFlag(args: string[]): AuditorConfig["scopeMode"] | undefined {
-  const value = readFlag(args, "--scope-mode");
-  return value === "augment" || value === "restrict" ? value : undefined;
-}
-
-function readReproductionModeFlag(args: string[]): AuditorConfig["reproductionMode"] | undefined {
-  const value = readFlag(args, "--repro") ?? readFlag(args, "--reproduction");
-  return value === "off" || value === "plan" || value === "execute" ? value : undefined;
 }
 
 function readMultiFlag(args: string[], name: string): string[] {

@@ -27,11 +27,7 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       cfg.sourcePaths = params.sourcePaths;
       cfg.corpusPaths = params.corpusPaths ?? [];
       cfg.provider = params.provider ?? cfg.provider;
-      if (params.model) {
-        cfg.enumModel = params.model;
-        cfg.auditModel = params.model;
-        cfg.verifyModel = params.model;
-      }
+      if (params.model) cfg.auditModel = params.model;
       if (typeof params.maxSteps === "number" && Number.isFinite(params.maxSteps)) cfg.huntMaxSteps = Math.max(1, Math.floor(params.maxSteps));
       if (params.scopeNote) cfg.huntScopeNote = params.scopeNote;
       cfg.outputDir = params.outputDir ?? cfg.outputDir;
