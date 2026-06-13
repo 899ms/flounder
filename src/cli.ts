@@ -26,6 +26,7 @@ async function main(argv: string[]): Promise<void> {
       ...(hasFlag(rest, "--mock-llm") ? { llm: new MockAuditLlmClient() } : {}),
     });
     printCoverage(result.runDir, result.summary.coverage);
+    console.log(`[report] ${result.runDir}/hunt_report.md  ← consolidated results (findings, hypotheses, scope coverage)`);
     if (result.scopeCoverage) {
       const { total, audited, pending } = result.scopeCoverage;
       console.log(`[scopes] audited ${audited}/${total}` + (pending > 0 ? `, ${pending} pending — run the same command again to audit the next batch (or --remap to re-enumerate).` : " — inventory fully audited."));

@@ -266,6 +266,12 @@ export async function runHunt(
         await logger.event("hunt_dig_done", { scope: scope.id, samples, findings: unioned.length });
       }
     }
+    // Each scope/dig session numbered its findings independently (f1, f2, …), so
+    // aggregating across scopes collides. Re-id uniquely so every finding gets its
+    // own disclosure report and is individually addressable.
+    aggregated.forEach((finding, idx) => {
+      finding.id = `f${idx + 1}`;
+    });
     session.findings = aggregated;
     session.counters.finding = aggregated.length;
     manualFindings = true;
@@ -347,6 +353,15 @@ export async function runHunt(
     await logger.artifact(reportArtifactName(finding.id), renderDisclosure(cfg.targetName, finding));
   }
 
+  // One consolidated, human-readable results file so collecting a run's output is
+  // "read this one file" — confirmed findings (with scope, location, exploit, fix),
+  // suspected hypotheses, and the scope-coverage map, aggregated across all digs
+  // (including concurrent ones).
+  await logger.artifact(
+    "hunt_report.md",
+    renderRunReport({ target: cfg.targetName, provider: cfg.provider, model: cfg.auditModel, confirmed, hypotheses, scopes: scopeInventory, reportName: reportArtifactName }),
+  );
+
   await persistFindingMemory(memory, confirmed, hypotheses);
 
   await logger.event("hunt_done", {
@@ -381,6 +396,72 @@ export async function runHunt(
     summary,
     ...(scopeInventory.length > 0 ? { scopeCoverage: scopeProgress(scopeInventory) } : {}),
   };
+}
+
+const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
+
+function renderRunReport(input: {
+  target: string;
+  provider: string;
+  model: string;
+  confirmed: AgentFinding[];
+  hypotheses: AgentFinding[];
+  scopes: AuditScope[];
+  reportName: (id: string) => string;
+}): string {
+  const clip = (text: string | undefined, max: number): string => {
+    const cleaned = (text ?? "").replace(/\s+/g, " ").trim();
+    return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+  };
+  const bySeverity = (a: AgentFinding, b: AgentFinding): number =>
+    (SEVERITY_ORDER.indexOf(a.severity) + 1 || 99) - (SEVERITY_ORDER.indexOf(b.severity) + 1 || 99);
+  const sevCounts = (findings: AgentFinding[]): string =>
+    SEVERITY_ORDER.map((sev) => [sev, findings.filter((f) => f.severity === sev).length] as const)
+      .filter(([, n]) => n > 0)
+      .map(([sev, n]) => `${sev}: ${n}`)
+      .join(", ");
+
+  const audited = input.scopes.filter((scope) => scope.status === "audited").length;
+  const out: string[] = [];
+  out.push(`# Audit results: ${input.target}`, "");
+  out.push(`- Provider / model: ${input.provider} / ${input.model}`);
+  out.push(`- Confirmed findings: ${input.confirmed.length}${input.confirmed.length ? ` (${sevCounts(input.confirmed)})` : ""}`);
+  out.push(`- Hypotheses (suspected, unconfirmed): ${input.hypotheses.length}`);
+  if (input.scopes.length > 0) {
+    const pending = input.scopes.length - audited;
+    out.push(`- Scope coverage: audited ${audited} / ${input.scopes.length}${pending > 0 ? `, ${pending} pending (re-run to continue)` : ""}`);
+  }
+  out.push("");
+
+  out.push(`## Confirmed findings (${input.confirmed.length})`, "");
+  if (input.confirmed.length === 0) out.push("_None reached execution-confirmed status this run. See hypotheses below._", "");
+  for (const finding of [...input.confirmed].sort(bySeverity)) {
+    out.push(`### [${finding.severity.toUpperCase()}] ${finding.title} — ${finding.confirmationStatus}${finding.disputed ? " — ⚠ DISPUTED by independent refutation" : ""}`);
+    if (finding.scopeId) out.push(`- Scope: \`${finding.scopeId}\``);
+    out.push(`- Location: ${finding.location}`);
+    if (finding.description) out.push(`- ${clip(finding.description, 700)}`);
+    if (finding.exploitSketch) out.push(`- Exploit: ${clip(finding.exploitSketch, 500)}`);
+    if (finding.fix) out.push(`- Fix: ${clip(finding.fix, 400)}`);
+    out.push(`- Full disclosure: ${input.reportName(finding.id)}`, "");
+  }
+
+  if (input.hypotheses.length > 0) {
+    out.push(`## Hypotheses — suspected, need a human or a test (${input.hypotheses.length})`, "");
+    for (const finding of [...input.hypotheses].sort(bySeverity)) {
+      out.push(`- **[${finding.severity.toUpperCase()}]** ${finding.title} — ${finding.location}${finding.scopeId ? ` (scope \`${finding.scopeId}\`)` : ""}`);
+    }
+    out.push("");
+  }
+
+  if (input.scopes.length > 0) {
+    out.push("## Scope coverage", "");
+    for (const scope of [...input.scopes].sort((a, b) => (b.score || 0) - (a.score || 0))) {
+      out.push(`- \`${(scope.status ?? "pending").padEnd(8)}\` score ${scope.score} — ${scope.region} — ${clip(scope.obligation, 90)}`);
+    }
+    out.push("");
+  }
+
+  return out.join("\n");
 }
 
 function buildSummary(confirmed: AgentFinding[], hypotheses: AgentFinding[], steps: { tool: string }[]): AuditSummary {

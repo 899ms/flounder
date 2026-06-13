@@ -507,6 +507,14 @@ test("map → dig --dig-concurrency audits scopes in parallel, isolated per-scop
     // Each concurrent dig ran in its own isolated workspace (no sharing).
     const digDirs = (await readdir(path.join(runDir, "hunt"))).filter((n) => n.startsWith("dig-"));
     assert.ok(digDirs.includes("dig-S1") && digDirs.includes("dig-S2"), "each scope got its own workspace");
+
+    // Findings are re-id'd uniquely across scopes, so each gets its own disclosure
+    // report, and a single consolidated report is auto-written.
+    const ids = new Set(findings.map((f) => f.id));
+    assert.equal(ids.size, 2, "findings have unique ids across scopes");
+    const runFiles = await readdir(runDir);
+    assert.ok(runFiles.includes("report_f1.md") && runFiles.includes("report_f2.md"), "one disclosure report per finding");
+    assert.ok(runFiles.includes("hunt_report.md"), "a consolidated results report is auto-written");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
