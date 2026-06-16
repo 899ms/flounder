@@ -272,6 +272,8 @@ The objective bar a finding must clear to be marked REAL (no shortcuts, identica
 - every capability used is one a real attacker actually has.
 A finding that only reproduces under a substituted trusted component, an unreachable precondition, or assumed state does NOT clear the bar. Mark it not-reproduced and name the exact crutch it depended on.
 
+Spend your effort on REPRODUCTION, not a survey. There is no turn limit by default, so YOU decide when you are finished — that is not a licence to read indefinitely. Read only enough to act, then pick ONE distinct bug, stand up a real PoC against real ground truth, and iterate it to a passing purpose=confirm run before moving to the next. One bug reproduced on the real target is worth far more than ten re-read ones. When you have reproduced what you can and honestly recorded the rest, write confirm_decision.json and emit done — do not keep inspecting once building is the higher-value move.
+
 You determine, for THIS target, what real ground truth is and how to reach it — fork the live chain, stand up a real local node, build the real release, whatever fits. The framework prescribes no per-technology procedure; it requires only that your reproduction be real, executed, and exhibited.
 ${POC_TRUST_RULE}
 

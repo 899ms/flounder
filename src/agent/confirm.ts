@@ -36,7 +36,7 @@ interface ConfirmProvenance {
 
 export async function runConfirm(
   cfg: AuditorConfig,
-  options: { inputRunDir: string; streamEvents?: boolean },
+  options: { inputRunDir: string; maxSteps?: number; streamEvents?: boolean },
 ): Promise<ConfirmRunResult> {
   // Confirm needs a real agent that can fork a live network and run real nodes; the
   // mock/CLI fallbacks cannot, so this mode requires a pi-session provider.
@@ -48,7 +48,11 @@ export async function runConfirm(
   if (cfg.sourcePaths.length === 0) throw new Error("fsa confirm needs --source (the target code to reproduce against)");
   const inputRunDir = path.resolve(options.inputRunDir);
 
-  const confirmCfg: AuditorConfig = { ...cfg, confirmMode: true };
+  // Confirm runs UNBOUNDED by default: reproduction on a real target is heavy, and the
+  // step count should never silently truncate productive work. A turn cap applies only
+  // when the caller explicitly asks for one (--max-steps). The run otherwise ends when
+  // the model emits done (the prompt pushes it to reproduce early, not survey forever).
+  const confirmCfg: AuditorConfig = { ...cfg, confirmMode: true, auditMaxSteps: options.maxSteps ?? Number.POSITIVE_INFINITY };
   const startedAt = new Date();
   const logger = new RunLogger(confirmCfg.outputDir, `${confirmCfg.targetName}-confirm`, startedAt, { streamEvents: options.streamEvents ?? false });
   await logger.init();
@@ -92,7 +96,7 @@ export async function runConfirm(
     findings: priorFindings.length,
     provider: confirmCfg.provider,
     model: confirmCfg.auditModel,
-    maxSteps: confirmCfg.auditMaxSteps,
+    maxSteps: Number.isFinite(confirmCfg.auditMaxSteps) ? confirmCfg.auditMaxSteps : "unlimited",
   });
 
   // 4. Run the confirm session. confirmMode=true makes the bash tool use the

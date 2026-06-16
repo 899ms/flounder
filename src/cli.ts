@@ -44,7 +44,9 @@ async function main(argv: string[]): Promise<void> {
     const inputRunDir = positional ?? readFlag(rest, "--run") ?? readFlag(rest, "--input");
     if (!inputRunDir) throw new Error("fsa confirm needs a prior run directory: fsa confirm <run-dir> --source <paths...>");
     if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required (the target code to reproduce against)");
-    const result = await runConfirm(cfg, { inputRunDir, streamEvents: true });
+    // Confirm is UNBOUNDED by default (run until the model finishes); --max-steps caps it only if given.
+    const maxSteps = readIntFlag(rest, "--max-steps");
+    const result = await runConfirm(cfg, { inputRunDir, ...(maxSteps !== undefined ? { maxSteps } : {}), streamEvents: true });
     console.log(`[confirm dir] ${result.runDir}`);
     console.log(`[report] ${result.runDir}/confirm_report.md  ← decision sheet (distinct bugs, reproduced?, novelty, recommendation)`);
     console.log(`[provenance] ${result.runDir}/confirm_provenance.json  ← fingerprints of the findings frozen before any network access`);
@@ -234,7 +236,7 @@ function printHelp(): void {
 
 Usage:
   fsa run --target <name> --source <paths...> [--corpus <paths...>] [--max-steps <n>]
-  fsa confirm <run-dir> --source <paths...> [--target <name>] [--max-steps <n>]
+  fsa confirm <run-dir> --source <paths...> [--target <name>] [--max-steps <n>]   (unbounded by default; --max-steps caps it)
   fsa history import-run --target <name> --run <dir> [--history-dir <dir>]
 
 run is the network-SEALED discovery pass: the model finds + proves bugs blind, with no

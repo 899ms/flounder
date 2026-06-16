@@ -69,9 +69,14 @@ export async function runAuditSession(input: {
     sessionManager: SessionManager.inMemory(),
   });
 
-  // Budget: the continuous session runs until the model stops on its own. Cap the
-  // number of model turns so a real run cannot grow unbounded in cost/time.
-  const maxTurns = Math.max(1, Math.floor(input.cfg.auditMaxSteps));
+  // Budget: the continuous session runs until the model stops on its own. A finite
+  // auditMaxSteps caps the number of model turns so a run cannot grow unbounded in
+  // cost/time; a non-finite or <=0 value means NO turn cap (confirm's default — the
+  // run then ends only when the model emits done, or errors). With no cap the model
+  // owns when it is finished, so the prompt pushes it to reproduce early rather than
+  // survey indefinitely.
+  const unbounded = !Number.isFinite(input.cfg.auditMaxSteps) || input.cfg.auditMaxSteps <= 0;
+  const maxTurns = unbounded ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(input.cfg.auditMaxSteps));
   // Forced-finalize budget: the loop driver nudges and force-writes when its step
   // budget runs out, but a continuous session has no such hook — on a large
   // codebase the model can spend its whole turn budget exploring and stop (or be
