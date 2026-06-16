@@ -17,10 +17,10 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  if (cmd === "hunt") {
+  if (cmd === "run") {
     const { cfg } = await parseConfig(rest);
-    if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required for hunt");
-    if (cfg.dryRun) throw new Error("hunt is an agentic mode and cannot run in --dry-run; use the mock model with --mock-llm for offline checks");
+    if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required");
+    if (cfg.dryRun) throw new Error("fsa run is an agentic mode and cannot run in --dry-run; use the mock model with --mock-llm for offline checks");
     const result = await runHunt(cfg, {
       streamEvents: true,
       ...(hasFlag(rest, "--mock-llm") ? { llm: new MockAuditLlmClient() } : {}),
@@ -216,7 +216,7 @@ function printHelp(): void {
   console.log(`full-stack-auditor
 
 Usage:
-  fsa hunt --target <name> --source <paths...> [--corpus <paths...>] [--max-steps <n>]
+  fsa run --target <name> --source <paths...> [--corpus <paths...>] [--max-steps <n>]
   fsa history import-run --target <name> --run <dir> [--history-dir <dir>]
 
 hunt is the thin agentic mode: the model drives its own investigation with

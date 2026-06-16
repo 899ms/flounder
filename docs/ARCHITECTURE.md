@@ -2,7 +2,7 @@
 
 ## Boundary
 
-`full-stack-auditor` is now centered on the thin agentic hunt path. The public driver is `fsa hunt`; the model decides the audit strategy and the framework supplies only capabilities, safety, confirmation gates, and replayable state.
+`full-stack-auditor` is now centered on the thin agentic hunt path. The public driver is `fsa run`; the model decides the audit strategy and the framework supplies only capabilities, safety, confirmation gates, and replayable state.
 
 The main layers are:
 
@@ -12,14 +12,14 @@ The main layers are:
 - Safety: `src/security/policy.ts` and `src/security/sandbox.ts` gate local command execution.
 - Reporting and history: `src/reports`, `src/trace`, and `src/agent/memory.ts`.
 - Provider adapters: `src/llm/pi-ai.ts`, with explicit local CLI fallbacks in `src/llm/codex-cli.ts` and `src/llm/claude-code.ts`.
-- Pi integration: `src/pi/extension.ts` registers the `fsa_hunt` tool and shell guardrail.
+- Pi integration: `src/pi/extension.ts` registers the `fsa_run` tool and shell guardrail.
 
 ## Hunt Flow
 
 ```mermaid
 flowchart TD
-  CLI["CLI: fsa hunt"] --> HUNT["runHunt"]
-  PI["pi tool: fsa_hunt"] --> HUNT
+  CLI["CLI: fsa run"] --> HUNT["runHunt"]
+  PI["pi tool: fsa_run"] --> HUNT
   HUNT --> INGEST["load source and corpus"]
   INGEST --> SESSION["logger, session, project memory"]
   SESSION --> TOOLS["build pi-style tools"]
@@ -151,7 +151,7 @@ For blind benchmarks with `provider=codex-cli`, set `FSA_CODEX_WEB_SEARCH=disabl
 
 ## Pi Integration
 
-The package extension exposes `fsa_hunt` and installs the shared shell-command guardrail. It does not expose a staged audit driver.
+The package extension exposes `fsa_run` and installs the shared shell-command guardrail. It does not expose a staged audit driver.
 
 The command guardrail lives in `src/security/policy.ts` so non-pi integrations can reuse the same policy.
 

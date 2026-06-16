@@ -2,10 +2,10 @@
 
 White-hat security audit framework for autonomous, model-driven source investigation.
 
-The public workflow is `fsa hunt`: a thin agentic loop where the model decides what to read, inspect, edit in a sandbox, test, and report. The framework provides capability and guarantees, not strategy.
+The public workflow is `fsa run`: a thin agentic loop where the model decides what to read, inspect, edit in a sandbox, test, and report. The framework provides capability and guarantees, not strategy.
 
 ```bash
-fsa hunt --target my-target --source ./src --corpus ./docs --max-steps 40
+fsa run --target my-target --source ./src --corpus ./docs --max-steps 40
 ```
 
 ## Design Principle
@@ -25,7 +25,7 @@ Everything about what might be a bug and how to investigate it belongs to the ag
 
 ```mermaid
 flowchart TD
-  A["fsa hunt"] --> B["Load source and corpus"]
+  A["fsa run"] --> B["Load source and corpus"]
   B --> C["Create logger, history, memory, session"]
   C --> D["Expose generic tools"]
   D --> E["Agent emits one JSON action or done"]
@@ -50,7 +50,7 @@ flowchart TD
 
 ## Tools
 
-The hunt tool surface is intentionally small:
+The tool surface is intentionally small:
 
 - `read`: read loaded source/corpus or files created in the sandbox.
 - `write`: write a file into the copied sandbox workspace.
@@ -61,7 +61,7 @@ There are no default bug-class, dataflow, checklist, memory, or report tools. If
 
 ## Confirmation
 
-Findings use two statuses in hunt mode:
+Findings use two statuses:
 
 - `suspected`: the agent reported a candidate without a passing cited local test.
 - `confirmed-executable`: the agent wrote `findings.json` with a `command_id` that cites a confirmation-eligible `bash` record.
@@ -78,7 +78,7 @@ npm test
 
 For live model runs, configure provider credentials in your shell or secret manager according to the pi-ai provider documentation. Do not commit credentials, local environment files, private corpora, or machine-specific paths.
 
-## Running Hunts
+## Usage
 
 One command; the model decides what to read, test, and report. The flags below shape *what* it audits and *how thoroughly* — never *what the bug is*.
 
@@ -105,7 +105,7 @@ All modes share the tools, the confirmation gate, and the local-only boundary.
 For a real audit, run `--deep` on a buildable target:
 
 ```bash
-fsa hunt --deep \
+fsa run --deep \
   --target protocol \
   --source ./contracts --build-root . \
   --corpus ./docs/specs \
@@ -150,7 +150,7 @@ Config files under `configs/` can still provide source paths, corpus paths, proj
 Examples:
 
 ```bash
-fsa hunt \
+fsa run \
   --config ./configs/solidity-contract-hunt.default.json \
   --target contract-audit \
   --source <contract-source-paths...> \
@@ -160,7 +160,7 @@ fsa hunt \
 ```
 
 ```bash
-fsa hunt \
+fsa run \
   --config ./configs/cairo-starknet-hunt.default.json \
   --target starknet-audit \
   --source <cairo-and-contract-source-paths...> \
@@ -179,7 +179,7 @@ Try the package locally from this directory:
 pi -e .
 ```
 
-The extension registers `fsa_hunt` and installs the shared command-safety guardrail for shell commands.
+The extension registers `fsa_run` and installs the shared command-safety guardrail for shell commands.
 
 ## Outputs
 

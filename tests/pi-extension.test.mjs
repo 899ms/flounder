@@ -19,7 +19,7 @@ test("pi extension registers agentic hunt tool", async () => {
   };
   extension(fakePi);
 
-  assert.ok(tools.has("fsa_hunt"));
+  assert.ok(tools.has("fsa_run"));
   assert.ok(commands.has("fsa"));
   assert.ok(handlers.has("tool_call"));
   assert.ok(handlers.has("user_bash"));

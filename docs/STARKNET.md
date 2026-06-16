@@ -13,7 +13,7 @@ In hunt mode, the profile is context, not a checklist. The agent still decides w
 ## Recommended Hunt
 
 ```bash
-fsa hunt \
+fsa run \
   --config ./configs/cairo-starknet-hunt.default.json \
   --target starknet-target-audit \
   --source <target>/src <target>/crates <target>/packages \

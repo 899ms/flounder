@@ -193,7 +193,7 @@ export async function runHunt(
     scopeInventory = cfg.huntRemap ? [] : await loadScopeInventory(inventoryDir);
     const resuming = scopeInventory.length > 0;
     if (picked.length > 0 && !resuming) {
-      throw new Error("--scope needs an existing scope inventory; run `fsa hunt --deep` first to enumerate scopes, then pick from hunt_scopes.json.");
+      throw new Error("--scope needs an existing scope inventory; run `fsa run --deep` first to enumerate scopes, then pick from hunt_scopes.json.");
     }
     if (!resuming) {
       const mapPhase = await runPhase(withRole(cfg, "map"), { mode: "map", maxSteps: cfg.huntMapSteps });

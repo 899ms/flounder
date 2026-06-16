@@ -6,7 +6,7 @@ import { analyzeCommandSafety } from "../security/policy.js";
 
 export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
   pi.registerTool({
-    name: "fsa_hunt",
+    name: "fsa_run",
     label: "Autonomous Security Hunt",
     description:
       "Run the thin agentic hunt: the model drives its own investigation with pi-style read/write/edit/bash tools. The framework supplies capability and verification, not a checklist. Verification is local-only; a finding only reaches confirmed-executable when a sandboxed local command passes. Requires a live model provider.",
@@ -50,7 +50,7 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
   pi.registerCommand("fsa", {
     description: "Show full-stack-auditor usage.",
     handler: async (_args, ctx) => {
-      ctx.ui.notify("Use the fsa_hunt tool or run `fsa hunt --target <name> --source <paths...>` from the terminal.", "info");
+      ctx.ui.notify("Use the fsa_run tool or run `fsa run --target <name> --source <paths...>` from the terminal.", "info");
     },
   });
 

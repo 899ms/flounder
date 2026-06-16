@@ -14,7 +14,7 @@ In hunt mode, the profile is context, not a checklist. The agent still decides w
 ## Recommended Hunt
 
 ```bash
-fsa hunt \
+fsa run \
   --config ./configs/solidity-contract-hunt.default.json \
   --target protocol-contract-audit \
   --source <target>/src <target>/contracts \
