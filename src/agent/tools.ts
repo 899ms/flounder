@@ -17,7 +17,7 @@ import type { RunLogger } from "../trace/logger.js";
 import type { ConfirmationStatus, Doc, ReproductionCommand, ReproductionCommandResult, ReproductionFile, Severity } from "../types.js";
 import type { ProjectMemory } from "./memory.js";
 
-// Pi-style capability surface for hunt mode. The framework exposes generic
+// Pi-style capability surface for audit mode. The framework exposes generic
 // affordances and hard guarantees only: read material, write/edit a copied
 // workspace, run a policy-gated local command, and validate executable evidence.
 // Bug classes, search schedules, source facts, and report actions are not
@@ -248,7 +248,7 @@ const writeTool: AgentTool = {
     if (!workspace) return { observation: "error: write needs on-disk source roots (sourcePaths); none are configured for this run." };
     await writeSandboxFiles(workspace.absolute, [{ path: normalized, content }]);
     ctx.session.scratchFiles.set(normalized, content);
-    await ctx.logger.event("hunt_write", { path: normalized, bytes: Buffer.byteLength(content, "utf8") });
+    await ctx.logger.event("audit_write", { path: normalized, bytes: Buffer.byteLength(content, "utf8") });
     return { observation: `wrote ${normalized} (${Buffer.byteLength(content, "utf8")} bytes) in sandbox workspace ${workspace.relative}.`, meta: { path: normalized } };
   },
 };
@@ -280,7 +280,7 @@ const editTool: AgentTool = {
 
     await writeSandboxFiles(workspace.absolute, [{ path: existing.path, content: next }]);
     ctx.session.scratchFiles.set(existing.path, next);
-    await ctx.logger.event("hunt_edit", { path: existing.path, bytes: Buffer.byteLength(next, "utf8") });
+    await ctx.logger.event("audit_edit", { path: existing.path, bytes: Buffer.byteLength(next, "utf8") });
     return { observation: `edited ${existing.path} in sandbox workspace ${workspace.relative}.`, meta: { path: existing.path } };
   },
 };
@@ -327,7 +327,7 @@ const bashTool: AgentTool = {
       workspace: workspace.relative,
     };
     ctx.session.commandRuns.push(record);
-    await ctx.logger.event("hunt_command_run", {
+    await ctx.logger.event("audit_command_run", {
       runId,
       purpose: normalized.purpose,
       passed,
@@ -382,7 +382,7 @@ function baselineBlockMessage(normalizedPath: string): string {
 }
 
 async function ensurePrepared(ctx: ToolContext, workspace: SandboxWorkspace): Promise<void> {
-  if (!ctx.cfg.huntPrepare || ctx.session.prepared) return;
+  if (!ctx.cfg.auditPrepare || ctx.session.prepared) return;
   ctx.session.prepared = true; // set before awaiting so a second test command does not re-trigger
   await prepareWorkspaceToolchain({ workspace, cfg: ctx.cfg, logger: ctx.logger, ...(ctx.session.buildCacheDir ? { cacheDir: ctx.session.buildCacheDir } : {}) });
 }
@@ -390,9 +390,9 @@ async function ensurePrepared(ctx: ToolContext, workspace: SandboxWorkspace): Pr
 async function ensureWorkspace(ctx: ToolContext): Promise<SandboxWorkspace | undefined> {
   if (ctx.session.workspace) return ctx.session.workspace;
   if (ctx.cfg.sourcePaths.length === 0) return undefined;
-  const workspace = await prepareSandboxWorkspace(ctx.cfg.sourcePaths, ctx.logger.runDir, "hunt/workspace");
+  const workspace = await prepareSandboxWorkspace(ctx.cfg.sourcePaths, ctx.logger.runDir, "audit/workspace");
   ctx.session.workspace = workspace;
-  await ctx.logger.event("hunt_workspace", { workspace: workspace.relative });
+  await ctx.logger.event("audit_workspace", { workspace: workspace.relative });
   return workspace;
 }
 
@@ -536,7 +536,7 @@ const CONFIRMATION_RANK: Record<string, number> = {
 };
 
 /** Union findings from multiple dig samples: dedupe by (location, title), keeping the
- *  strongest-confirmed (then highest-confidence) instance. Used when huntDigSamples > 1. */
+ *  strongest-confirmed (then highest-confidence) instance. Used when auditDigSamples > 1. */
 export function dedupeFindings(findings: AgentFinding[]): AgentFinding[] {
   const best = new Map<string, AgentFinding>();
   for (const finding of findings) {
@@ -586,7 +586,7 @@ function normalizeBashCommand(
   // the short timeout. Without this a real `cargo test`/`go test` confirm cannot
   // finish its cold compile within the 120s inspect budget.
   const compiles = isAgentBuildCommand(command) || isAgentConfirmCommand(command);
-  const ceilingMs = compiles ? Math.max(cfg.reproductionCommandTimeoutMs, cfg.huntPrepareTimeoutMs) : cfg.reproductionCommandTimeoutMs;
+  const ceilingMs = compiles ? Math.max(cfg.reproductionCommandTimeoutMs, cfg.auditPrepareTimeoutMs) : cfg.reproductionCommandTimeoutMs;
   const defaultMs = compiles ? ceilingMs : cfg.reproductionCommandTimeoutMs;
   command.timeoutMs = clampInt(args.timeout_ms ?? args.timeoutMs, 1000, ceilingMs, defaultMs);
   command.expectedExitCode = clampInt(args.expected_exit_code ?? args.expectedExitCode, 0, 255, 0);

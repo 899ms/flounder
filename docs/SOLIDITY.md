@@ -1,8 +1,8 @@
 # Solidity And EVM Contract Audits
 
-`configs/solidity-contract-hunt.default.json` provides optional context for authorized Solidity and EVM smart-contract hunts.
+`configs/solidity-contract-audit.default.json` provides optional context for authorized Solidity and EVM smart-contract audits.
 
-In hunt mode, the profile is context, not a checklist. The agent still decides what to read, suspect, test, and report. Deterministic profiles, provenance facts, source indexes, and local seeders are planning aids only; findings must come from the agent and local evidence.
+In audit mode, the profile is context, not a checklist. The agent still decides what to read, suspect, test, and report. Deterministic profiles, provenance facts, source indexes, and local seeders are planning aids only; findings must come from the agent and local evidence.
 
 ## What The Profile Adds
 
@@ -11,11 +11,11 @@ In hunt mode, the profile is context, not a checklist. The agent still decides w
 - Solidity provenance facts for externally callable functions, external calls, delegatecall, state writes, auth guards, signatures, oracle reads, upgrade hooks, token transfers, governance paths, name-service paths, bridge fields, and unchecked arithmetic.
 - Foundry and Hardhat compatibility for local-only test execution under the shared command policy.
 
-## Recommended Hunt
+## Recommended Audit
 
 ```bash
 fsa run \
-  --config ./configs/solidity-contract-hunt.default.json \
+  --config ./configs/solidity-contract-audit.default.json \
   --target protocol-contract-audit \
   --source <target>/src <target>/contracts \
   --corpus <target>/README.md <target>/docs <target>/specs \
@@ -29,7 +29,7 @@ For larger repositories, include the highest-signal specs, prior audits, test su
 
 ## Local Reproduction
 
-Reproduction is part of the hunt: the agent calls `bash` to write and run local tests in the copied workspace, and a finding only becomes `confirmed-executable` when a `purpose=confirm` test passes. Commands are restricted to local test runners such as:
+Reproduction is part of the audit: the agent calls `bash` to write and run local tests in the copied workspace, and a finding only becomes `confirmed-executable` when a `purpose=confirm` test passes. Commands are restricted to local test runners such as:
 
 - `forge test`
 - `npx hardhat test`
@@ -45,4 +45,4 @@ Load as much source-backed context as possible:
 - Protocol specs, whitepapers, docs, invariants, prior audits, known limitations, and threat-model notes.
 - Fuzz, invariant, and unit tests as context. Tests are coverage evidence, not proof that a property is enforced.
 
-For high-stakes hunts, extend `projectContext` with exact protocol assets, roles, deployed components, upgrade model, oracle model, cross-chain assumptions, and out-of-scope components.
+For high-stakes audits, extend `projectContext` with exact protocol assets, roles, deployed components, upgrade model, oracle model, cross-chain assumptions, and out-of-scope components.

@@ -60,10 +60,10 @@ export async function runRefutation(input: {
         const verdict: RefutationVerdict = { findingId: finding.id, refuted: parsed.refuted, unrealistic, reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 800) : "" };
         finding.refutation = { refuted: verdict.refuted, reason: verdict.reason, unrealistic };
         out.push(verdict);
-        await input.logger.event("hunt_refutation", { findingId: finding.id, refuted: verdict.refuted, unrealistic });
+        await input.logger.event("audit_refutation", { findingId: finding.id, refuted: verdict.refuted, unrealistic });
       }
     } catch (error) {
-      await input.logger.event("hunt_refutation_error", { findingId: finding.id, error: error instanceof Error ? error.message.slice(0, 300) : String(error) });
+      await input.logger.event("audit_refutation_error", { findingId: finding.id, error: error instanceof Error ? error.message.slice(0, 300) : String(error) });
     }
   }
   return out;

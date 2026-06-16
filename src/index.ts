@@ -1,8 +1,8 @@
-// Public library surface for the hunt-only framework. The staged audit pipeline
-// was removed; everything here supports the agentic hunt path (capabilities,
+// Public library surface for the audit-only framework. The staged audit pipeline
+// was removed; everything here supports the agentic audit path (capabilities,
 // guarantees, persistence) so embedders can drive runs and reuse the safety
 // primitives.
-export * from "./agent/hunt.js";
+export * from "./agent/audit.js";
 export * from "./agent/loop.js";
 export * from "./agent/memory.js";
 export * from "./agent/pi-session.js";

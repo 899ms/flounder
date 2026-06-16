@@ -108,6 +108,6 @@ export async function runDifferentialConfirmation(input: {
     patchedMissing: patchedCheck.missing,
     exploitStillReproduces,
   };
-  await input.logger.event("hunt_differential", { findingId: finding.id, confirmed, exploitStillReproduces, patchedExit: patchedRun.exitCode });
+  await input.logger.event("audit_differential", { findingId: finding.id, confirmed, exploitStillReproduces, patchedExit: patchedRun.exitCode });
   return result;
 }

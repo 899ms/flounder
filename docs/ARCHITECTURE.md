@@ -2,11 +2,11 @@
 
 ## Boundary
 
-`full-stack-auditor` is now centered on the thin agentic hunt path. The public driver is `fsa run`; the model decides the audit strategy and the framework supplies only capabilities, safety, confirmation gates, and replayable state.
+`full-stack-auditor` is now centered on the thin agentic audit path. The public driver is `fsa run`; the model decides the audit strategy and the framework supplies only capabilities, safety, confirmation gates, and replayable state.
 
 The main layers are:
 
-- Agent loop: `src/agent/loop.ts`, `src/agent/prompts.ts`, and `src/agent/hunt.ts`.
+- Agent loop: `src/agent/loop.ts`, `src/agent/prompts.ts`, and `src/agent/audit.ts`.
 - Agent tools: `src/agent/tools.ts` for pi-style read/write/edit/bash capabilities.
 - Ingestion: `src/ingest/source.ts` loads authorized source and corpus material with public-safe paths.
 - Safety: `src/security/policy.ts` and `src/security/sandbox.ts` gate local command execution.
@@ -14,13 +14,13 @@ The main layers are:
 - Provider adapters: `src/llm/pi-ai.ts`, with explicit local CLI fallbacks in `src/llm/codex-cli.ts` and `src/llm/claude-code.ts`.
 - Pi integration: `src/pi/extension.ts` registers the `fsa_run` tool and shell guardrail.
 
-## Hunt Flow
+## Audit Flow
 
 ```mermaid
 flowchart TD
-  CLI["CLI: fsa run"] --> HUNT["runHunt"]
-  PI["pi tool: fsa_run"] --> HUNT
-  HUNT --> INGEST["load source and corpus"]
+  CLI["CLI: fsa run"] --> AUDIT["runAudit"]
+  PI["pi tool: fsa_run"] --> AUDIT
+  AUDIT --> INGEST["load source and corpus"]
   INGEST --> SESSION["logger, session, project memory"]
   SESSION --> TOOLS["build pi-style tools"]
   TOOLS --> PROMPT["thin kickoff prompt"]
@@ -57,7 +57,7 @@ The same loop runs three postures, selected by flags. All three share the tools,
   - **MAP** (`map` role): a bounded breadth pass whose only job is to enumerate a *complete* scope inventory to `scopes.json`. The model applies three general lenses — spec conditions, value/asset flow, trusted-but-unbound inputs — and scores each scope by exposure × difficulty. The framework encodes **no** domain analysis: the lenses are prompt text, the model reads the code and writes the inventory, and `readScratchScopes` only parses the JSON the model produced. Scoring is the model's; the framework's sole ranking act is `sort(by model score)` then `slice(maxScopes)`.
   - **DIG** (`dig` role): deep-audits the selected scopes one at a time via the pinned-deep posture, each pinned to a scope's obligation + region. Findings are accumulated and tagged with their `scopeId`.
 
-**Resumable coverage.** The scope inventory persists (with per-scope status) under the project history dir (`scope-store.ts`), next to `memory.jsonl`. A map → dig run audits the highest-scored *not-yet-audited* scopes up to `--max-scopes`; the rest stay `pending` (visible, never silently dropped). Re-running the same command **resumes** — it skips MAP and audits the next batch — so a large inventory reaches full coverage across several budget-limited runs. `--remap` re-enumerates from scratch. `HuntResult.scopeCoverage` and a CLI hint report progress.
+**Resumable coverage.** The scope inventory persists (with per-scope status) under the project history dir (`scope-store.ts`), next to `memory.jsonl`. A map → dig run audits the highest-scored *not-yet-audited* scopes up to `--max-scopes`; the rest stay `pending` (visible, never silently dropped). Re-running the same command **resumes** — it skips MAP and audits the next batch — so a large inventory reaches full coverage across several budget-limited runs. `--remap` re-enumerates from scratch. `AuditRunResult.scopeCoverage` and a CLI hint report progress.
 
 **Human-in-the-loop seam.** `--scope <id[,id...]>` deep-audits exactly the named inventory scopes (re-auditing an already-audited one is allowed), ignoring score order — the operator picks from the complete map by id, reusing the obligation + region the map already wrote. This is the reliable path when the model's *ranking* under-orders a subtle-but-critical scope: enumeration is complete, so the scope is always pickable even if it ranks low.
 
@@ -65,12 +65,12 @@ The same loop runs three postures, selected by flags. All three share the tools,
 
 ## Thin-Layer Rule
 
-A component belongs in hunt mode only if it gives the model something it cannot provide for itself:
+A component belongs in audit mode only if it gives the model something it cannot provide for itself:
 
 - an affordance: read source, write/edit a copied workspace, inspect with local commands, run a local test;
 - a guarantee: sandbox isolation, command safety, path redaction, replayable logs, durable history, executable-confirmation gating.
 
-A component does not belong in the default hunt path if it tells the model what bug class to look for, what schedule to follow, or what conclusion to reach. If a human prior is still useful, expose it as an optional model-callable tool.
+A component does not belong in the default audit path if it tells the model what bug class to look for, what schedule to follow, or what conclusion to reach. If a human prior is still useful, expose it as an optional model-callable tool.
 
 ## Tool Surface
 
@@ -81,7 +81,7 @@ Default tools:
 - `edit`: replace text in a file inside the copied sandbox workspace.
 - `bash`: run one policy-gated local command in the copied workspace. `purpose=inspect` (default) is for exploration (`ls`/`find`/`rg`/`cat`/`sed`/reads) and never confirms anything; `purpose=confirm` must be a real local test/build runner (`cargo test`, `forge test`, `go test`, `node --test`, `pytest`, …) with success patterns, and only it can mint confirmation.
 
-There are no default bug-class, dataflow, checklist, memory, or report tools. Optional priors should live as extension skills, prompt packs, corpus material, or package add-ons, not as default strategy in hunt mode.
+There are no default bug-class, dataflow, checklist, memory, or report tools. Optional priors should live as extension skills, prompt packs, corpus material, or package add-ons, not as default strategy in audit mode.
 
 ## Confirmation Boundary
 
@@ -89,9 +89,9 @@ The hard rule is that the model cannot confirm a bug by assertion. The problem i
 
 **Status ladder** (`ConfirmationStatus`):
 
-- A **hypothesis** (`suspected`) is any candidate not backed by a passing test. Recorded prominently in `hunt_hypotheses.json` and counted in `summary.coverage.hypotheses`, but it is not a finding and gets no report.
+- A **hypothesis** (`suspected`) is any candidate not backed by a passing test. Recorded prominently in `audit_hypotheses.json` and counted in `summary.coverage.hypotheses`, but it is not a finding and gets no report.
 - `confirmed-executable` — cited a `bash` `command_id` of a `purpose=confirm` run that passed (expected exit plus every declared success pattern).
-- `confirmed-differential` — the strongest: also survived fail-after-fix (below). `confirmed-*` candidates are findings: they enter `hunt_findings.json`/`summary.findings` and get a disclosure report.
+- `confirmed-differential` — the strongest: also survived fail-after-fix (below). `confirmed-*` candidates are findings: they enter `audit_findings.json`/`summary.findings` and get a disclosure report.
 
 **1. Confirmation requires a real test/build runner.** An inspection command (`cat`, `rg`, …) can never mint confirmation even with `purpose=confirm` and a matching success pattern — otherwise a model could forge proof by printing a success string from a file it wrote itself (`isAgentConfirmCommand` in `src/security/policy.ts`).
 
@@ -103,47 +103,47 @@ The hard rule is that the model cannot confirm a bug by assertion. The problem i
 
 ## Verification Environment
 
-Confirmation is only reachable if the model's local test can compile and run, which on a real target requires the toolchain's dependencies. Two settings make a heavy compiled target workable. First, `--build-root` decouples the buildable workspace from the audit scope: the sandbox copies the build root (e.g. a Cargo workspace whose members the audited crate path-depends on) so the project compiles, while the model still reads only `--source`. Second, `src/agent/prepare.ts` warms the copied workspace once: it detects the toolchain (Cargo, Go, npm/pnpm/yarn, Foundry) and runs the project's own dependency fetch/build (`cargo fetch` + `cargo build`, `go mod download`, `npm ci`, `forge build`, …) with network allowed and a generous timeout (`AuditorConfig.huntPrepareTimeoutMs`). The warm-up uses a **persistent, host-isolated** package cache (`HOME` is the per-run workspace; `CARGO_HOME`/`GOMODCACHE`/npm cache live under the project history dir, shared with the model's own commands), so dependencies download once and the heavy dependency build is reused. It builds the lib/deps (not `--tests`) so it never fails on the model's in-progress scratch tests. Afterwards the model's `bash` build/test runs are incremental — and build/test commands (`isAgentBuildCommand`/`isAgentConfirmCommand`) get the build-grade timeout (`max(reproductionCommandTimeoutMs, huntPrepareTimeoutMs)`), not the short inspect budget, so a real `cargo test` can compile and run within budget. These commands are framework-chosen (not model input); the step is gated by `AuditorConfig.huntPrepare` (default on, `--no-prepare` to skip) and is a no-op when no manifest is present.
+Confirmation is only reachable if the model's local test can compile and run, which on a real target requires the toolchain's dependencies. Two settings make a heavy compiled target workable. First, `--build-root` decouples the buildable workspace from the audit scope: the sandbox copies the build root (e.g. a Cargo workspace whose members the audited crate path-depends on) so the project compiles, while the model still reads only `--source`. Second, `src/agent/prepare.ts` warms the copied workspace once: it detects the toolchain (Cargo, Go, npm/pnpm/yarn, Foundry) and runs the project's own dependency fetch/build (`cargo fetch` + `cargo build`, `go mod download`, `npm ci`, `forge build`, …) with network allowed and a generous timeout (`AuditorConfig.auditPrepareTimeoutMs`). The warm-up uses a **persistent, host-isolated** package cache (`HOME` is the per-run workspace; `CARGO_HOME`/`GOMODCACHE`/npm cache live under the project history dir, shared with the model's own commands), so dependencies download once and the heavy dependency build is reused. It builds the lib/deps (not `--tests`) so it never fails on the model's in-progress scratch tests. Afterwards the model's `bash` build/test runs are incremental — and build/test commands (`isAgentBuildCommand`/`isAgentConfirmCommand`) get the build-grade timeout (`max(reproductionCommandTimeoutMs, auditPrepareTimeoutMs)`), not the short inspect budget, so a real `cargo test` can compile and run within budget. These commands are framework-chosen (not model input); the step is gated by `AuditorConfig.auditPrepare` (default on, `--no-prepare` to skip) and is a no-op when no manifest is present.
 
 This path is validated end-to-end: with `--build-root` set to a Cargo workspace and a generous `--prepare-timeout-ms`, the codex provider autonomously found a real crate-internal ZK soundness bug, authored a MockProver exploit, built and ran it, and the finding reached `confirmed-differential` (the framework applied the model's fix to pristine source and re-ran to show the exploit blocked). The codex provider (via pi) is the launchable autonomous path and routes all tools through this sandbox.
 
 Warm-up is **lazy**: the `bash` tool runs it once, on the first test/build command (`isAgentConfirmCommand`), rather than eagerly before the loop. So a read-only audit, or a run that fails authentication before it ever runs a test, pays nothing for it.
 
-Reference-independence is why execution-grounding is the core of confirmation, not a nicety. A reference implementation, spec, book, or prior audit can carry the same bug — some bugs live in the canonical implementation itself — so "matches upstream/spec" inherits the reference's errors and cannot, in principle, catch a bug present in the reference. Only two things are trustworthy because neither depends on an external authority being correct: the security property derived from first principles, and an executable counterexample that the real artifact accepts. The hunt prompts therefore forbid comparison-based clearing (a component is cleared only by naming the invariant and the constraint that enforces it, or by an executable counterexample), and differential confirmation is the framework-side instance of the second anchor.
+Reference-independence is why execution-grounding is the core of confirmation, not a nicety. A reference implementation, spec, book, or prior audit can carry the same bug — some bugs live in the canonical implementation itself — so "matches upstream/spec" inherits the reference's errors and cannot, in principle, catch a bug present in the reference. Only two things are trustworthy because neither depends on an external authority being correct: the security property derived from first principles, and an executable counterexample that the real artifact accepts. The audit prompts therefore forbid comparison-based clearing (a component is cleared only by naming the invariant and the constraint that enforces it, or by an executable counterexample), and differential confirmation is the framework-side instance of the second anchor.
 
-**Independent refutation** (`src/agent/refutation.ts`, gated by `AuditorConfig.huntRefute`, default on) guards against a single reasoning chain inheriting a wrong assumption. After confirmation, a fresh-context skeptic — which never saw the finder's investigation — re-derives the invariant and tries to break each confirmed finding (show the property is enforced, or the exploit does not work), under the same no-comparison-clearing rule. A single-test `confirmed-executable` it debunks is downgraded to a hypothesis; a `confirmed-differential` it disputes is kept (execution is ground truth) but flagged `disputed` in the finding and the disclosure report for human review. Verdicts are written to `hunt_refutation.json`.
+**Independent refutation** (`src/agent/refutation.ts`, gated by `AuditorConfig.auditRefute`, default on) guards against a single reasoning chain inheriting a wrong assumption. After confirmation, a fresh-context skeptic — which never saw the finder's investigation — re-derives the invariant and tries to break each confirmed finding (show the property is enforced, or the exploit does not work), under the same no-comparison-clearing rule. A single-test `confirmed-executable` it debunks is downgraded to a hypothesis; a `confirmed-differential` it disputes is kept (execution is ground truth) but flagged `disputed` in the finding and the disclosure report for human review. Verdicts are written to `audit_refutation.json`.
 
 Remaining hardening targets: execution-driven discovery on a buildable target (adversarial property tests reveal under-constraint empirically, independent of any reference), enforced network isolation for confirm runs, and turning `confirmed-differential` findings into stored regression tests that future runs re-execute.
 
 ## Memory And History
 
-Each hunt writes:
+Each audit writes:
 
-- `hunt_transcript.json`: action/observation replay.
-- `hunt_findings.json`: execution-confirmed findings only.
-- `hunt_hypotheses.json`: unconfirmed candidates.
-- `hunt_command_runs.json`: sandboxed local command records.
-- `hunt_prepare.json`: toolchain warm-up results (when a manifest was detected).
+- `audit_transcript.json`: action/observation replay.
+- `audit_findings.json`: execution-confirmed findings only.
+- `audit_hypotheses.json`: unconfirmed candidates.
+- `audit_command_runs.json`: sandboxed local command records.
+- `audit_prepare.json`: toolchain warm-up results (when a manifest was detected).
 - `summary.json`: ranked summary (findings) with `coverage.hypotheses`.
 - `report_<id>.md`: private disclosure drafts, for confirmed findings only.
 - `events.jsonl` and `calls/*.json`: trace and model calls.
 
-Per-target memory lives at `<out>/history/<target>/memory.jsonl`. Hunt surfaces recent memory at kickoff and automatically stores parsed findings for later runs.
+Per-target memory lives at `<out>/history/<target>/memory.jsonl`. Audit surfaces recent memory at kickoff and automatically stores parsed findings for later runs.
 
 Project history lives under `<out>/history/<target>/manifest.json` and records sanitized run metadata, findings, and materials. Paths must stay repository-relative or placeholder-based in public-facing artifacts.
 
 ## Drivers
 
-Hunt has two interchangeable drivers behind the same tools, sandbox, confirmation gate, and artifacts:
+Audit has two interchangeable drivers behind the same tools, sandbox, confirmation gate, and artifacts:
 
-- Continuous session (`src/agent/pi-session.ts`, default for real runs): a pi-coding-agent `AgentSession` owns the loop. The framework registers only the sandboxed tools as the session's `customTools` (with `noTools: "all"`, so pi's built-in filesystem tools are disabled) and calls `session.prompt()` once; the session keeps context server-side and orchestrates tool calls natively. This avoids the per-step transcript resend that grows quadratically and exhausts quota. The session is bounded by a turn budget (`AuditorConfig.huntMaxSteps`): on reaching it the framework counts `turn_end` events and calls `session.abort()`, so a real run cannot grow unbounded in cost. Used whenever the provider is a real pi-ai provider.
+- Continuous session (`src/agent/pi-session.ts`, default for real runs): a pi-coding-agent `AgentSession` owns the loop. The framework registers only the sandboxed tools as the session's `customTools` (with `noTools: "all"`, so pi's built-in filesystem tools are disabled) and calls `session.prompt()` once; the session keeps context server-side and orchestrates tool calls natively. This avoids the per-step transcript resend that grows quadratically and exhausts quota. The session is bounded by a turn budget (`AuditorConfig.auditMaxSteps`): on reaching it the framework counts `turn_end` events and calls `session.abort()`, so a real run cannot grow unbounded in cost. Used whenever the provider is a real pi-ai provider.
 - Legacy loop (`src/agent/loop.ts`): the framework re-drives a stateless `complete()` once per step with a JSON action protocol. Used for the deterministic mock (offline tests) and the explicit CLI fallbacks.
 
-The default hunt provider is `openai-codex` (`gpt-5.5`). The continuous session requires pi to be authenticated for that provider (`pi` → `/login`); pi does not reuse the standalone codex CLI's credentials, so an unauthenticated run fails fast with an actionable message (use `--mock-llm` for offline checks). Per project constraint, the session driver targets pi providers such as `openai-codex`; `claude-code` is not used as a session backend (it is not permitted outside Claude apps and needs no API key here).
+The default audit provider is `openai-codex` (`gpt-5.5`). The continuous session requires pi to be authenticated for that provider (`pi` → `/login`); pi does not reuse the standalone codex CLI's credentials, so an unauthenticated run fails fast with an actionable message (use `--mock-llm` for offline checks). Per project constraint, the session driver targets pi providers such as `openai-codex`; `claude-code` is not used as a session backend (it is not permitted outside Claude apps and needs no API key here).
 
 ## Provider Behavior
 
-`provider=codex-cli` and `provider=claude-code` are explicit local CLI fallbacks that run through the legacy loop. CLI fallbacks run non-interactively and must preserve the hunt contract: in agentic mode they must not inject "do not inspect files" instructions, because the framework tools are how the model investigates.
+`provider=codex-cli` and `provider=claude-code` are explicit local CLI fallbacks that run through the legacy loop. CLI fallbacks run non-interactively and must preserve the audit contract: in agentic mode they must not inject "do not inspect files" instructions, because the framework tools are how the model investigates.
 
 Model and provider selection stays runtime-configured. Do not assume every model family is available through every provider.
 
@@ -159,7 +159,7 @@ The command guardrail lives in `src/security/policy.ts` so non-pi integrations c
 
 - `npm run check`: strict TypeScript compile.
 - `npm test`: build plus Node tests.
-- `npm run mock-hunt`: deterministic offline hunt smoke test.
+- `npm run mock-audit`: deterministic offline audit smoke test.
 - `npm run check:public`: public-surface scan for secrets and local paths.
 - `npm run verify`: full local gate.
 

@@ -13,7 +13,7 @@ Private report for maintainers. Please coordinate disclosure.
 - Severity estimate: ${finding.severity.toUpperCase()}
 - Component / location: ${finding.location}
 - Class: ${finding.failureMode}
-- Confirmation status: ${finding.confirmationStatus}${finding.disputed ? `\n- DISPUTED by independent refutation (execution-proven but a skeptic disagrees — needs human review): ${finding.refutationReason ?? "see hunt_refutation.json"}` : ""}
+- Confirmation status: ${finding.confirmationStatus}${finding.disputed ? `\n- DISPUTED by independent refutation (execution-proven but a skeptic disagrees — needs human review): ${finding.refutationReason ?? "see audit_refutation.json"}` : ""}
 - Source verifier verdict: ${verification?.verdict ?? "not-run"}
 - Verification mode: ${verification?.mode ?? "not-run"}
 - Impact signals: ${finding.impactSignals?.join(", ") || "not-scored"}

@@ -6,9 +6,9 @@ import test from "node:test";
 import { defaultConfig, resolveRole, withRole, normalizeRoleModels } from "../dist/config.js";
 import { ProjectMemory } from "../dist/agent/memory.js";
 import { buildTools, ingestFindingsFromScratch, newSession, dedupeFindings } from "../dist/agent/tools.js";
-import { runHunt } from "../dist/agent/hunt.js";
-import { runHuntLoop, isTransientError } from "../dist/agent/loop.js";
-import { buildDeepKickoff, HUNT_DEEP_SYSTEM } from "../dist/agent/prompts.js";
+import { runAudit } from "../dist/agent/audit.js";
+import { runAuditLoop, isTransientError } from "../dist/agent/loop.js";
+import { buildDeepKickoff, AUDIT_DEEP_SYSTEM } from "../dist/agent/prompts.js";
 import { runDifferentialConfirmation } from "../dist/agent/differential.js";
 import { runRefutation } from "../dist/agent/refutation.js";
 import { isPiSessionProvider, mapThinkingLevel } from "../dist/agent/pi-session.js";
@@ -135,10 +135,10 @@ test("read, write, edit, and bash operate on loaded material and the copied work
     assert.match(scratch.observation, /hello new value/);
 
     await tool("write").run({
-      path: "hunt_repro.test.mjs",
+      path: "audit_repro.test.mjs",
       content: "import test from 'node:test';\n\ntest('local harness success', () => {});\n",
     }, ctx);
-    const run = await tool("bash").run({ cmd: "node --test hunt_repro.test.mjs", purpose: "confirm", success_patterns: ["local harness success"] }, ctx);
+    const run = await tool("bash").run({ cmd: "node --test audit_repro.test.mjs", purpose: "confirm", success_patterns: ["local harness success"] }, ctx);
     assert.match(run.observation, /CONFIRMATION-ELIGIBLE PASS/);
     assert.equal(ctx.session.commandRuns.length, 1);
     assert.equal(ctx.session.commandRuns[0].passed, true);
@@ -236,7 +236,7 @@ test("deep mode: obligation-driven prompt enforces design-intent enumeration and
   // enforcing line, treat a constraint to the wrong referent / an absent constraint
   // as the finding, and never clear on "looks standard".
   for (const needle of ["obligation", "DESIGN INTENT", "ABSENCE is the finding", "wrong referent", "looks standard"]) {
-    assert.ok(HUNT_DEEP_SYSTEM.includes(needle), `deep system prompt missing: ${needle}`);
+    assert.ok(AUDIT_DEEP_SYSTEM.includes(needle), `deep system prompt missing: ${needle}`);
   }
   const tools = [];
   const pinned = buildDeepKickoff({ target: "t", tools, fileManifest: "(files)", maxSteps: 30, deepFocus: "ecc/chip/mul" });
@@ -289,7 +289,7 @@ test("forced finalize: a run that never writes findings.json still captures hypo
   const dir = await tempDir();
   try {
     const cfg = defaultConfig();
-    cfg.huntMaxSteps = 3;
+    cfg.auditMaxSteps = 3;
     const logger = await tempLogger(dir);
     const session = newSession();
     const ctx = {
@@ -304,7 +304,7 @@ test("forced finalize: a run that never writes findings.json still captures hypo
     // then on the dedicated finalize call returns its residual hypotheses.
     const llm = {
       async complete(input) {
-        if (input.tag === "hunt_finalize") {
+        if (input.tag === "audit_finalize") {
           return JSON.stringify([
             { title: "Residual suspicion in x.rs", severity: "medium", location: "x.rs:2", description: "looked off", confidence: 0.3 },
           ]);
@@ -313,7 +313,7 @@ test("forced finalize: a run that never writes findings.json still captures hypo
       },
     };
 
-    const result = await runHuntLoop({ cfg, llm, tools: buildTools(), ctx, logger, maxSteps: 3, fileManifest: "x.rs" });
+    const result = await runAuditLoop({ cfg, llm, tools: buildTools(), ctx, logger, maxSteps: 3, fileManifest: "x.rs" });
     assert.equal(result.stoppedReason, "step-budget");
     // The forced finalize wrote findings.json even though the model never did.
     assert.ok(session.scratchFiles.has("findings.json"), "finalize must capture output when the model never writes it");
@@ -380,7 +380,7 @@ test("differential confirmation: a real fix blocks the exploit; a no-op fix does
   }
 });
 
-test("hunt produces an execution-confirmed finding and banks cross-run memory", async () => {
+test("audit produces an execution-confirmed finding and banks cross-run memory", async () => {
   const dir = await tempDir();
   try {
     const corpusFile = path.join(dir, "spec.md");
@@ -390,46 +390,46 @@ test("hunt produces an execution-confirmed finding and banks cross-run memory", 
     cfg.sourcePaths = [fixtures];
     cfg.corpusPaths = [corpusFile];
     cfg.outputDir = path.join(dir, "runs");
-    cfg.huntMaxSteps = 10;
+    cfg.auditMaxSteps = 10;
 
-    const { runDir, summary } = await runHunt(cfg, { llm: new MockAuditLlmClient() });
+    const { runDir, summary } = await runAudit(cfg, { llm: new MockAuditLlmClient() });
 
     assert.equal(summary.findings.length, 1);
     const finding = summary.findings[0];
     assert.equal(finding.confirmationStatus, "confirmed-executable", "a finding the skeptic could not refute stays confirmed");
-    assert.equal(finding.failureMode, "autonomous", "hunt findings are not forced into a fixed taxonomy");
+    assert.equal(finding.failureMode, "autonomous", "audit findings are not forced into a fixed taxonomy");
     assert.equal(summary.coverage.verifiedFindings, 1);
     assert.equal(summary.coverage.unverifiedFindings, 0);
     assert.equal(summary.coverage.hypotheses, 0, "the mock's single candidate is confirmed, so there are no hypotheses");
 
     // Only confirmed candidates become findings; hypotheses are a separate artifact.
-    const findingsArtifact = JSON.parse(await readFile(path.join(runDir, "hunt_findings.json"), "utf8"));
+    const findingsArtifact = JSON.parse(await readFile(path.join(runDir, "audit_findings.json"), "utf8"));
     assert.equal(findingsArtifact.length, 1);
-    const hypothesesArtifact = JSON.parse(await readFile(path.join(runDir, "hunt_hypotheses.json"), "utf8"));
+    const hypothesesArtifact = JSON.parse(await readFile(path.join(runDir, "audit_hypotheses.json"), "utf8"));
     assert.equal(hypothesesArtifact.length, 0);
 
     // The fixture workspace has no toolchain manifest, so the warm-up is a no-op
-    // (no hunt_prepare.json) and never blocks an offline run.
+    // (no audit_prepare.json) and never blocks an offline run.
     let prepareWritten = true;
     try {
-      await stat(path.join(runDir, "hunt_prepare.json"));
+      await stat(path.join(runDir, "audit_prepare.json"));
     } catch {
       prepareWritten = false;
     }
     assert.equal(prepareWritten, false, "warm-up must no-op when no manifest is present");
 
     // Corpus is copied into the workspace so the agent can read/grep it.
-    const corpusEntries = await readdir(path.join(runDir, "hunt", "workspace", "corpus"));
+    const corpusEntries = await readdir(path.join(runDir, "audit", "workspace", "corpus"));
     assert.ok(corpusEntries.length >= 1, "corpus material must be copied into the workspace");
 
-    const transcript = JSON.parse(await readFile(path.join(runDir, "hunt_transcript.json"), "utf8"));
+    const transcript = JSON.parse(await readFile(path.join(runDir, "audit_transcript.json"), "utf8"));
     assert.equal(transcript.stoppedReason, "finished");
     assert.ok(transcript.steps.some((step) => step.tool === "read"));
     assert.ok(transcript.steps.some((step) => step.tool === "write"));
     assert.ok(transcript.steps.some((step) => step.tool === "bash"));
-    assert.ok(!transcript.steps.some((step) => step.tool === "dataflow"), "hunt default tools must not include strategy aids");
+    assert.ok(!transcript.steps.some((step) => step.tool === "dataflow"), "audit default tools must not include strategy aids");
 
-    const commandRuns = JSON.parse(await readFile(path.join(runDir, "hunt_command_runs.json"), "utf8"));
+    const commandRuns = JSON.parse(await readFile(path.join(runDir, "audit_command_runs.json"), "utf8"));
     assert.equal(commandRuns.length, 1);
     assert.equal(commandRuns[0].passed, true);
 
@@ -455,15 +455,15 @@ test("map → dig: --deep enumerates scopes then deep-audits each, tagging findi
     cfg.sourcePaths = [fixtures];
     cfg.corpusPaths = [fixtures];
     cfg.outputDir = path.join(dir, "runs");
-    cfg.huntDeep = true; // map → dig flow (no pinned focus)
-    cfg.huntMapSteps = 6;
-    cfg.huntDigSteps = 8;
-    cfg.huntMaxScopes = 1; // audit only the top scope this run; the rest stay pending
+    cfg.auditDeep = true; // map → dig flow (no pinned focus)
+    cfg.auditMapSteps = 6;
+    cfg.auditDigSteps = 8;
+    cfg.auditMaxScopes = 1; // audit only the top scope this run; the rest stay pending
 
-    const { runDir, summary, scopeCoverage } = await runHunt(cfg, { llm: new MockAuditLlmClient() });
+    const { runDir, summary, scopeCoverage } = await runAudit(cfg, { llm: new MockAuditLlmClient() });
 
     // The map phase wrote the full scope inventory; dig audited only the top one.
-    const scopes = JSON.parse(await readFile(path.join(runDir, "hunt_scopes.json"), "utf8"));
+    const scopes = JSON.parse(await readFile(path.join(runDir, "audit_scopes.json"), "utf8"));
     assert.equal(scopes.length, 2, "map enumerates the complete inventory");
     const s1 = scopes.find((s) => s.id === "S1");
     const s2 = scopes.find((s) => s.id === "S2");
@@ -474,7 +474,7 @@ test("map → dig: --deep enumerates scopes then deep-audits each, tagging findi
     // Dig produced the confirmed finding, tagged by the scope it came from.
     assert.equal(summary.findings.length, 1);
     assert.equal(summary.findings[0].confirmationStatus, "confirmed-executable");
-    const findingsArtifact = JSON.parse(await readFile(path.join(runDir, "hunt_findings.json"), "utf8"));
+    const findingsArtifact = JSON.parse(await readFile(path.join(runDir, "audit_findings.json"), "utf8"));
     assert.equal(findingsArtifact[0].scopeId, "S1", "dig findings are tagged with the scope they came from");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -489,23 +489,23 @@ test("map → dig --dig-concurrency audits scopes in parallel, isolated per-scop
     cfg.sourcePaths = [fixtures];
     cfg.corpusPaths = [fixtures];
     cfg.outputDir = path.join(dir, "runs");
-    cfg.huntDeep = true;
-    cfg.huntMapSteps = 6;
-    cfg.huntDigSteps = 8;
-    cfg.huntMaxScopes = 2;
-    cfg.huntDigConcurrency = 2; // audit both scopes in parallel
+    cfg.auditDeep = true;
+    cfg.auditMapSteps = 6;
+    cfg.auditDigSteps = 8;
+    cfg.auditMaxScopes = 2;
+    cfg.auditDigConcurrency = 2; // audit both scopes in parallel
 
-    const { runDir, summary } = await runHunt(cfg, { llm: new MockAuditLlmClient() });
+    const { runDir, summary } = await runAudit(cfg, { llm: new MockAuditLlmClient() });
 
     // Both enumerated scopes were deep-audited concurrently, each producing its finding.
     assert.equal(summary.findings.length, 2, "both scopes audited in parallel");
-    const findings = JSON.parse(await readFile(path.join(runDir, "hunt_findings.json"), "utf8"));
+    const findings = JSON.parse(await readFile(path.join(runDir, "audit_findings.json"), "utf8"));
     const scopeIds = new Set(findings.map((f) => f.scopeId));
     assert.ok(scopeIds.has("S1") && scopeIds.has("S2"), "findings are tagged with both scopes");
     for (const f of findings) assert.equal(f.confirmationStatus, "confirmed-executable");
 
     // Each concurrent dig ran in its own isolated workspace (no sharing).
-    const digDirs = (await readdir(path.join(runDir, "hunt"))).filter((n) => n.startsWith("dig-"));
+    const digDirs = (await readdir(path.join(runDir, "audit"))).filter((n) => n.startsWith("dig-"));
     assert.ok(digDirs.includes("dig-S1") && digDirs.includes("dig-S2"), "each scope got its own workspace");
 
     // Findings are re-id'd uniquely across scopes, so each gets its own disclosure
@@ -514,7 +514,7 @@ test("map → dig --dig-concurrency audits scopes in parallel, isolated per-scop
     assert.equal(ids.size, 2, "findings have unique ids across scopes");
     const runFiles = await readdir(runDir);
     assert.ok(runFiles.includes("report_f1.md") && runFiles.includes("report_f2.md"), "one disclosure report per finding");
-    assert.ok(runFiles.includes("hunt_report.md"), "a consolidated results report is auto-written");
+    assert.ok(runFiles.includes("audit_report.md"), "a consolidated results report is auto-written");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -528,25 +528,25 @@ test("map → dig is resumable: a second run skips map and audits the next pendi
       sourcePaths: [fixtures],
       corpusPaths: [fixtures],
       outputDir: path.join(dir, "runs"),
-      huntDeep: true,
-      huntMapSteps: 6,
-      huntDigSteps: 8,
-      huntMaxScopes: 1,
+      auditDeep: true,
+      auditMapSteps: 6,
+      auditDigSteps: 8,
+      auditMaxScopes: 1,
     };
 
     // Run 1: map enumerates S1+S2, dig audits S1, S2 left pending.
-    const run1 = await runHunt({ ...defaultConfig(), ...base }, { llm: new MockAuditLlmClient() });
+    const run1 = await runAudit({ ...defaultConfig(), ...base }, { llm: new MockAuditLlmClient() });
     assert.deepEqual(run1.scopeCoverage, { total: 2, audited: 1, pending: 1 });
     const events1 = (await readFile(path.join(run1.runDir, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
-    assert.ok(events1.some((e) => e.kind === "hunt_map_done"), "run 1 enumerates the inventory");
+    assert.ok(events1.some((e) => e.kind === "audit_map_done"), "run 1 enumerates the inventory");
 
     // Run 2: same target/out → resume. No new map; audits the next pending scope (S2).
-    const run2 = await runHunt({ ...defaultConfig(), ...base }, { llm: new MockAuditLlmClient() });
+    const run2 = await runAudit({ ...defaultConfig(), ...base }, { llm: new MockAuditLlmClient() });
     assert.deepEqual(run2.scopeCoverage, { total: 2, audited: 2, pending: 0 }, "the second run completes coverage");
     const events2 = (await readFile(path.join(run2.runDir, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
-    assert.ok(!events2.some((e) => e.kind === "hunt_map_done"), "run 2 must not re-run the map phase");
-    assert.ok(events2.some((e) => e.kind === "hunt_map_resumed"), "run 2 resumes the persisted inventory");
-    const run2Findings = JSON.parse(await readFile(path.join(run2.runDir, "hunt_findings.json"), "utf8"));
+    assert.ok(!events2.some((e) => e.kind === "audit_map_done"), "run 2 must not re-run the map phase");
+    assert.ok(events2.some((e) => e.kind === "audit_map_resumed"), "run 2 resumes the persisted inventory");
+    const run2Findings = JSON.parse(await readFile(path.join(run2.runDir, "audit_findings.json"), "utf8"));
     assert.equal(run2Findings[0]?.scopeId, "S2", "run 2 audits the previously-pending scope (S2)");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -567,13 +567,13 @@ test("buildRoot: the sandbox copies the buildable root, while the model reads on
     cfg.sourcePaths = [path.join(buildRoot, "crate", "src")]; // narrow audit scope
     cfg.buildRoot = buildRoot; // full buildable workspace
     cfg.outputDir = path.join(dir, "runs");
-    cfg.huntMaxSteps = 6;
+    cfg.auditMaxSteps = 6;
 
-    const { runDir } = await runHunt(cfg, { llm: new MockAuditLlmClient() });
+    const { runDir } = await runAudit(cfg, { llm: new MockAuditLlmClient() });
 
     // The sandbox workspace contains the build root's manifest (copied from buildRoot),
     // which is NOT under the narrow sourcePaths subdir — proving buildRoot drove the copy.
-    const manifest = path.join(runDir, "hunt", "workspace", "Cargo.toml");
+    const manifest = path.join(runDir, "audit", "workspace", "Cargo.toml");
     assert.ok((await stat(manifest)).isFile(), "the buildable root's manifest must be copied into the sandbox");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -588,26 +588,26 @@ test("map → dig: --scope picks a specific inventory item to deep-audit (human-
       sourcePaths: [fixtures],
       corpusPaths: [fixtures],
       outputDir: path.join(dir, "runs"),
-      huntDeep: true,
-      huntMapSteps: 6,
-      huntDigSteps: 8,
-      huntMaxScopes: 1,
+      auditDeep: true,
+      auditMapSteps: 6,
+      auditDigSteps: 8,
+      auditMaxScopes: 1,
     };
 
     // Run 1 enumerates S1+S2 and audits S1 (top score); S2 left pending.
-    await runHunt({ ...defaultConfig(), ...base }, { llm: new MockAuditLlmClient() });
+    await runAudit({ ...defaultConfig(), ...base }, { llm: new MockAuditLlmClient() });
 
     // Pick S2 explicitly — skip map, ignore score order, deep-audit exactly S2.
-    const picked = await runHunt({ ...defaultConfig(), ...base, huntScopeIds: ["S2"] }, { llm: new MockAuditLlmClient() });
+    const picked = await runAudit({ ...defaultConfig(), ...base, auditScopeIds: ["S2"] }, { llm: new MockAuditLlmClient() });
     const events = (await readFile(path.join(picked.runDir, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
-    assert.ok(!events.some((e) => e.kind === "hunt_map_done"), "picking must not re-map");
-    assert.ok(events.some((e) => e.kind === "hunt_scope_picked" && e.ids.includes("S2")), "the named scope is audited");
-    const findings = JSON.parse(await readFile(path.join(picked.runDir, "hunt_findings.json"), "utf8"));
+    assert.ok(!events.some((e) => e.kind === "audit_map_done"), "picking must not re-map");
+    assert.ok(events.some((e) => e.kind === "audit_scope_picked" && e.ids.includes("S2")), "the named scope is audited");
+    const findings = JSON.parse(await readFile(path.join(picked.runDir, "audit_findings.json"), "utf8"));
     assert.equal(findings[0]?.scopeId, "S2", "the finding is tagged with the picked scope");
 
     // An unknown id is reported, not silently ignored.
     await assert.rejects(
-      runHunt({ ...defaultConfig(), ...base, huntScopeIds: ["S99"] }, { llm: new MockAuditLlmClient() }),
+      runAudit({ ...defaultConfig(), ...base, auditScopeIds: ["S99"] }, { llm: new MockAuditLlmClient() }),
       /none of the requested scope ids exist/,
     );
   } finally {
@@ -636,17 +636,17 @@ test("map → dig: --dig-samples runs a scope K times and unions findings (recal
     cfg.sourcePaths = [fixtures];
     cfg.corpusPaths = [fixtures];
     cfg.outputDir = path.join(dir, "runs");
-    cfg.huntDeep = true;
-    cfg.huntMapSteps = 6;
-    cfg.huntDigSteps = 8;
-    cfg.huntMaxScopes = 1;
-    cfg.huntDigSamples = 2;
+    cfg.auditDeep = true;
+    cfg.auditMapSteps = 6;
+    cfg.auditDigSteps = 8;
+    cfg.auditMaxScopes = 1;
+    cfg.auditDigSamples = 2;
 
-    const { runDir, summary } = await runHunt(cfg, { llm: new MockAuditLlmClient() });
+    const { runDir, summary } = await runAudit(cfg, { llm: new MockAuditLlmClient() });
 
     // Two independent dig passes ran; the identical finding is unioned to one.
     const events = (await readFile(path.join(runDir, "events.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
-    const sampleEvents = events.filter((e) => e.kind === "hunt_dig_sample");
+    const sampleEvents = events.filter((e) => e.kind === "audit_dig_sample");
     assert.equal(sampleEvents.length, 2, "two dig samples ran for the scope");
     assert.equal(summary.findings.length, 1, "the duplicate finding is unioned to one");
   } finally {
@@ -654,7 +654,7 @@ test("map → dig: --dig-samples runs a scope K times and unions findings (recal
   }
 });
 
-test("hunt run directories are unique to the millisecond so rapid same-target runs do not collide", () => {
+test("audit run directories are unique to the millisecond so rapid same-target runs do not collide", () => {
   // Regression for the resumable flow running back-to-back within one second.
   const t = new Date("2026-06-12T01:22:54.123Z");
   const t2 = new Date("2026-06-12T01:22:54.789Z");

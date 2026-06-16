@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { defaultConfig, normalizeProjectContext, normalizeRoleModels, type AuditorConfig } from "./config.js";
-import { runHunt } from "./agent/hunt.js";
+import { runAudit } from "./agent/audit.js";
 import { MockAuditLlmClient } from "./llm/mock.js";
 import { importRunToProjectHistory, projectHistoryManifestPath } from "./trace/history.js";
 
@@ -21,12 +21,12 @@ async function main(argv: string[]): Promise<void> {
     const { cfg } = await parseConfig(rest);
     if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required");
     if (cfg.dryRun) throw new Error("fsa run is an agentic mode and cannot run in --dry-run; use the mock model with --mock-llm for offline checks");
-    const result = await runHunt(cfg, {
+    const result = await runAudit(cfg, {
       streamEvents: true,
       ...(hasFlag(rest, "--mock-llm") ? { llm: new MockAuditLlmClient() } : {}),
     });
     printCoverage(result.runDir, result.summary.coverage);
-    console.log(`[report] ${result.runDir}/hunt_report.md  ← consolidated results (findings, hypotheses, scope coverage)`);
+    console.log(`[report] ${result.runDir}/audit_report.md  ← consolidated results (findings, hypotheses, scope coverage)`);
     if (result.scopeCoverage) {
       const { total, audited, pending } = result.scopeCoverage;
       console.log(`[scopes] audited ${audited}/${total}` + (pending > 0 ? `, ${pending} pending — run the same command again to audit the next batch (or --remap to re-enumerate).` : " — inventory fully audited."));
@@ -57,34 +57,34 @@ async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig }> {
   cfg.auditModel = readFlag(args, "--audit-model") ?? readFlag(args, "--model") ?? cfg.auditModel;
   cfg.maxTokens = readIntFlag(args, "--max-tokens") ?? cfg.maxTokens;
   cfg.reproductionCommandTimeoutMs = readIntFlag(args, "--repro-timeout-ms") ?? cfg.reproductionCommandTimeoutMs;
-  cfg.huntMaxSteps = readIntFlag(args, "--max-steps") ?? cfg.huntMaxSteps;
+  cfg.auditMaxSteps = readIntFlag(args, "--max-steps") ?? cfg.auditMaxSteps;
   const scopeNote = readFlag(args, "--scope-note");
-  if (scopeNote !== undefined) cfg.huntScopeNote = scopeNote;
-  if (args.includes("--no-prepare")) cfg.huntPrepare = false;
-  cfg.huntPrepareTimeoutMs = readIntFlag(args, "--prepare-timeout-ms") ?? cfg.huntPrepareTimeoutMs;
-  if (args.includes("--no-refute")) cfg.huntRefute = false;
-  if (args.includes("--no-appeal")) cfg.huntAppeal = false;
-  if (args.includes("--deep")) cfg.huntDeep = true;
-  cfg.huntMaxScopes = readIntFlag(args, "--max-scopes") ?? cfg.huntMaxScopes;
-  cfg.huntMapSteps = readIntFlag(args, "--map-steps") ?? cfg.huntMapSteps;
-  cfg.huntDigSteps = readIntFlag(args, "--dig-steps") ?? cfg.huntDigSteps;
-  cfg.huntDigSamples = readIntFlag(args, "--dig-samples") ?? cfg.huntDigSamples;
-  cfg.huntDigConcurrency = readIntFlag(args, "--dig-concurrency") ?? cfg.huntDigConcurrency;
-  if (args.includes("--remap")) cfg.huntRemap = true;
+  if (scopeNote !== undefined) cfg.auditScopeNote = scopeNote;
+  if (args.includes("--no-prepare")) cfg.auditPrepare = false;
+  cfg.auditPrepareTimeoutMs = readIntFlag(args, "--prepare-timeout-ms") ?? cfg.auditPrepareTimeoutMs;
+  if (args.includes("--no-refute")) cfg.auditRefute = false;
+  if (args.includes("--no-appeal")) cfg.auditAppeal = false;
+  if (args.includes("--deep")) cfg.auditDeep = true;
+  cfg.auditMaxScopes = readIntFlag(args, "--max-scopes") ?? cfg.auditMaxScopes;
+  cfg.auditMapSteps = readIntFlag(args, "--map-steps") ?? cfg.auditMapSteps;
+  cfg.auditDigSteps = readIntFlag(args, "--dig-steps") ?? cfg.auditDigSteps;
+  cfg.auditDigSamples = readIntFlag(args, "--dig-samples") ?? cfg.auditDigSamples;
+  cfg.auditDigConcurrency = readIntFlag(args, "--dig-concurrency") ?? cfg.auditDigConcurrency;
+  if (args.includes("--remap")) cfg.auditRemap = true;
   const scopeSel = readFlag(args, "--scope");
   if (scopeSel) {
     const ids = scopeSel.split(",").map((id) => id.trim()).filter(Boolean);
     if (ids.length > 0) {
-      cfg.huntScopeIds = ids;
-      cfg.huntDeep = true; // picking a scope is a deep (map → dig) operation
+      cfg.auditScopeIds = ids;
+      cfg.auditDeep = true; // picking a scope is a deep (map → dig) operation
     }
   }
   const verifyPath = readFlag(args, "--verify");
-  if (verifyPath !== undefined) cfg.huntVerify = verifyPath;
+  if (verifyPath !== undefined) cfg.auditVerify = verifyPath;
   const deepFocus = readFlag(args, "--deep-focus");
   if (deepFocus !== undefined) {
-    cfg.huntDeep = true;
-    cfg.huntDeepFocus = deepFocus;
+    cfg.auditDeep = true;
+    cfg.auditDeepFocus = deepFocus;
   }
   if (args.includes("--dry-run")) cfg.dryRun = true;
   const thinking = readFlag(args, "--thinking");
@@ -112,35 +112,35 @@ function applyConfigOverrides(cfg: AuditorConfig, raw: Record<string, unknown>):
   if (typeof rawReproductionCommandTimeoutMs === "number" && Number.isFinite(rawReproductionCommandTimeoutMs)) {
     cfg.reproductionCommandTimeoutMs = Math.max(1000, Math.floor(rawReproductionCommandTimeoutMs));
   }
-  const rawHuntMaxSteps = raw.huntMaxSteps ?? raw.hunt_max_steps;
-  if (typeof rawHuntMaxSteps === "number" && Number.isFinite(rawHuntMaxSteps)) cfg.huntMaxSteps = Math.max(1, Math.floor(rawHuntMaxSteps));
-  const rawHuntScopeNote = raw.huntScopeNote ?? raw.hunt_scope_note;
-  if (typeof rawHuntScopeNote === "string" && rawHuntScopeNote.trim().length > 0) cfg.huntScopeNote = rawHuntScopeNote.trim();
-  const rawHuntPrepare = raw.huntPrepare ?? raw.hunt_prepare;
-  if (typeof rawHuntPrepare === "boolean") cfg.huntPrepare = rawHuntPrepare;
-  const rawHuntPrepareTimeoutMs = raw.huntPrepareTimeoutMs ?? raw.hunt_prepare_timeout_ms;
-  if (typeof rawHuntPrepareTimeoutMs === "number" && Number.isFinite(rawHuntPrepareTimeoutMs)) cfg.huntPrepareTimeoutMs = Math.max(10_000, Math.floor(rawHuntPrepareTimeoutMs));
-  const rawHuntRefute = raw.huntRefute ?? raw.hunt_refute;
-  if (typeof rawHuntRefute === "boolean") cfg.huntRefute = rawHuntRefute;
-  const rawHuntAppeal = raw.huntAppeal ?? raw.hunt_appeal;
-  if (typeof rawHuntAppeal === "boolean") cfg.huntAppeal = rawHuntAppeal;
-  const rawHuntDeep = raw.huntDeep ?? raw.hunt_deep;
-  if (typeof rawHuntDeep === "boolean") cfg.huntDeep = rawHuntDeep;
-  const rawHuntDeepFocus = raw.huntDeepFocus ?? raw.hunt_deep_focus;
-  if (typeof rawHuntDeepFocus === "string" && rawHuntDeepFocus.trim().length > 0) {
-    cfg.huntDeep = true;
-    cfg.huntDeepFocus = rawHuntDeepFocus.trim();
+  const rawAuditMaxSteps = raw.auditMaxSteps ?? raw.audit_max_steps;
+  if (typeof rawAuditMaxSteps === "number" && Number.isFinite(rawAuditMaxSteps)) cfg.auditMaxSteps = Math.max(1, Math.floor(rawAuditMaxSteps));
+  const rawAuditScopeNote = raw.auditScopeNote ?? raw.audit_scope_note;
+  if (typeof rawAuditScopeNote === "string" && rawAuditScopeNote.trim().length > 0) cfg.auditScopeNote = rawAuditScopeNote.trim();
+  const rawAuditPrepare = raw.auditPrepare ?? raw.audit_prepare;
+  if (typeof rawAuditPrepare === "boolean") cfg.auditPrepare = rawAuditPrepare;
+  const rawAuditPrepareTimeoutMs = raw.auditPrepareTimeoutMs ?? raw.audit_prepare_timeout_ms;
+  if (typeof rawAuditPrepareTimeoutMs === "number" && Number.isFinite(rawAuditPrepareTimeoutMs)) cfg.auditPrepareTimeoutMs = Math.max(10_000, Math.floor(rawAuditPrepareTimeoutMs));
+  const rawAuditRefute = raw.auditRefute ?? raw.audit_refute;
+  if (typeof rawAuditRefute === "boolean") cfg.auditRefute = rawAuditRefute;
+  const rawAuditAppeal = raw.auditAppeal ?? raw.audit_appeal;
+  if (typeof rawAuditAppeal === "boolean") cfg.auditAppeal = rawAuditAppeal;
+  const rawAuditDeep = raw.auditDeep ?? raw.audit_deep;
+  if (typeof rawAuditDeep === "boolean") cfg.auditDeep = rawAuditDeep;
+  const rawAuditDeepFocus = raw.auditDeepFocus ?? raw.audit_deep_focus;
+  if (typeof rawAuditDeepFocus === "string" && rawAuditDeepFocus.trim().length > 0) {
+    cfg.auditDeep = true;
+    cfg.auditDeepFocus = rawAuditDeepFocus.trim();
   }
-  const rawMaxScopes = raw.huntMaxScopes ?? raw.hunt_max_scopes;
-  if (typeof rawMaxScopes === "number" && Number.isFinite(rawMaxScopes)) cfg.huntMaxScopes = Math.max(1, Math.floor(rawMaxScopes));
-  const rawMapSteps = raw.huntMapSteps ?? raw.hunt_map_steps;
-  if (typeof rawMapSteps === "number" && Number.isFinite(rawMapSteps)) cfg.huntMapSteps = Math.max(1, Math.floor(rawMapSteps));
-  const rawDigSteps = raw.huntDigSteps ?? raw.hunt_dig_steps;
-  if (typeof rawDigSteps === "number" && Number.isFinite(rawDigSteps)) cfg.huntDigSteps = Math.max(1, Math.floor(rawDigSteps));
-  const rawDigSamples = raw.huntDigSamples ?? raw.hunt_dig_samples;
-  if (typeof rawDigSamples === "number" && Number.isFinite(rawDigSamples)) cfg.huntDigSamples = Math.max(1, Math.floor(rawDigSamples));
-  const rawDigConcurrency = raw.huntDigConcurrency ?? raw.hunt_dig_concurrency;
-  if (typeof rawDigConcurrency === "number" && Number.isFinite(rawDigConcurrency)) cfg.huntDigConcurrency = Math.max(1, Math.floor(rawDigConcurrency));
+  const rawMaxScopes = raw.auditMaxScopes ?? raw.audit_max_scopes;
+  if (typeof rawMaxScopes === "number" && Number.isFinite(rawMaxScopes)) cfg.auditMaxScopes = Math.max(1, Math.floor(rawMaxScopes));
+  const rawMapSteps = raw.auditMapSteps ?? raw.audit_map_steps;
+  if (typeof rawMapSteps === "number" && Number.isFinite(rawMapSteps)) cfg.auditMapSteps = Math.max(1, Math.floor(rawMapSteps));
+  const rawDigSteps = raw.auditDigSteps ?? raw.audit_dig_steps;
+  if (typeof rawDigSteps === "number" && Number.isFinite(rawDigSteps)) cfg.auditDigSteps = Math.max(1, Math.floor(rawDigSteps));
+  const rawDigSamples = raw.auditDigSamples ?? raw.audit_dig_samples;
+  if (typeof rawDigSamples === "number" && Number.isFinite(rawDigSamples)) cfg.auditDigSamples = Math.max(1, Math.floor(rawDigSamples));
+  const rawDigConcurrency = raw.auditDigConcurrency ?? raw.audit_dig_concurrency;
+  if (typeof rawDigConcurrency === "number" && Number.isFinite(rawDigConcurrency)) cfg.auditDigConcurrency = Math.max(1, Math.floor(rawDigConcurrency));
   if (raw.thinkingLevel === "minimal" || raw.thinkingLevel === "low" || raw.thinkingLevel === "medium" || raw.thinkingLevel === "high" || raw.thinkingLevel === "xhigh") {
     cfg.thinkingLevel = raw.thinkingLevel;
   }
@@ -219,7 +219,7 @@ Usage:
   fsa run --target <name> --source <paths...> [--corpus <paths...>] [--max-steps <n>]
   fsa history import-run --target <name> --run <dir> [--history-dir <dir>]
 
-hunt is the thin agentic mode: the model drives its own investigation with
+audit is the thin agentic mode: the model drives its own investigation with
 pi-style read/write/edit/bash tools and durable cross-run memory. The framework
 supplies capability and verification, not a checklist.
 
@@ -228,27 +228,27 @@ Options:
   --corpus <paths...>     design/reference MATERIALS the model reads to derive what the code MUST enforce: specifications, whitepapers, design notes, protocol docs, prior audit reports, incident write-ups/post-mortems, even a relevant book chapter. Copied into the sandbox under corpus/; the map/dig prompts treat them as design intent (lens 1). This is the supported way to give the audit context — it is CONTEXT (what the system is supposed to guarantee), not answers. Do not put the suspected bug or its location here; provide the spec and let the model find the gap.
   --config <file>         JSON config with project context, models, and paths
   --provider <name>       pi-ai provider (default openai-codex); codex-cli/claude-code are CLI fallbacks
-  --model <name>          set the hunt model
+  --model <name>          set the audit model
   --history-dir <dir>     project history directory, default <out>/history
   --thinking <level>      minimal|low|medium|high|xhigh
-  --max-steps <n>         hunt: max agent turns/actions before stopping, default 40
-  --scope-note <text>     hunt: one-line authorized-scope hint for the agent
-  --no-prepare            hunt: skip the toolchain warm-up (deps fetch/build)
+  --max-steps <n>         audit: max agent turns/actions before stopping, default 40
+  --scope-note <text>     audit: one-line authorized-scope hint for the agent
+  --no-prepare            audit: skip the toolchain warm-up (deps fetch/build)
   --prepare-timeout-ms <n>
-                          hunt: per-command timeout for the warm-up, default 600000
-  --build-root <path>     hunt: directory copied into the sandbox so it is buildable (e.g. a workspace root); defaults to --source
-  --no-refute             hunt: skip the independent-refutation pass on confirmed findings
-  --no-appeal             hunt: skip the one faithful-PoC appeal a refuted finding may make
-  --deep                  hunt: map → dig flow (map enumerates scopes, dig deep-audits the top ones)
-  --deep-focus <path>     hunt: skip map and deep-audit one pinned region (implies --deep)
-  --max-scopes <n>        hunt: how many un-audited scopes the dig phase audits per run, default 6
-  --map-steps <n>         hunt: action budget for the map phase, default 20
-  --dig-steps <n>         hunt: per-scope action budget for the dig phase, default 30
-  --dig-samples <n>       hunt: independent dig passes per scope, findings unioned (raises recall), default 1
-  --dig-concurrency <n>   hunt: how many scopes to deep-audit in parallel (isolated workspaces), default 1
-  --remap                 hunt: re-enumerate scopes from scratch (default resumes the persisted inventory)
-  --scope <id[,id...]>    hunt: deep-audit specific scope id(s) from the inventory (implies --deep; run --deep once first to enumerate)
-  --verify <file>         hunt: confirm-or-refute existing suspected finding(s) by execution. <file> is JSON (one finding or an array; each: title, location, description, exploit_sketch?, fix_patch?). Skips map/dig; writes a PoC, builds, runs it through the confirmation gate + differential, and marks each confirmed-differential / confirmed-executable / REFUTED. Needs a buildable target (do not pass --no-prepare).
+                          audit: per-command timeout for the warm-up, default 600000
+  --build-root <path>     audit: directory copied into the sandbox so it is buildable (e.g. a workspace root); defaults to --source
+  --no-refute             audit: skip the independent-refutation pass on confirmed findings
+  --no-appeal             audit: skip the one faithful-PoC appeal a refuted finding may make
+  --deep                  audit: map → dig flow (map enumerates scopes, dig deep-audits the top ones)
+  --deep-focus <path>     audit: skip map and deep-audit one pinned region (implies --deep)
+  --max-scopes <n>        audit: how many un-audited scopes the dig phase audits per run, default 6
+  --map-steps <n>         audit: action budget for the map phase, default 20
+  --dig-steps <n>         audit: per-scope action budget for the dig phase, default 30
+  --dig-samples <n>       audit: independent dig passes per scope, findings unioned (raises recall), default 1
+  --dig-concurrency <n>   audit: how many scopes to deep-audit in parallel (isolated workspaces), default 1
+  --remap                 audit: re-enumerate scopes from scratch (default resumes the persisted inventory)
+  --scope <id[,id...]>    audit: deep-audit specific scope id(s) from the inventory (implies --deep; run --deep once first to enumerate)
+  --verify <file>         audit: confirm-or-refute existing suspected finding(s) by execution. <file> is JSON (one finding or an array; each: title, location, description, exploit_sketch?, fix_patch?). Skips map/dig; writes a PoC, builds, runs it through the confirmation gate + differential, and marks each confirmed-differential / confirmed-executable / REFUTED. Needs a buildable target (do not pass --no-prepare).
   --mock-llm              run with the deterministic mock model
 `);
 }

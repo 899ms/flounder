@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import extension from "../dist/pi/extension.js";
 
-test("pi extension registers agentic hunt tool", async () => {
+test("pi extension registers agentic audit tool", async () => {
   const tools = new Map();
   const handlers = new Map();
   const commands = new Map();

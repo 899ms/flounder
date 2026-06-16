@@ -20,54 +20,54 @@ export interface AuditorConfig {
   reproductionCommandTimeoutMs: number;
   reproductionMaxFileBytes: number;
   reproductionMaxLogBytes: number;
-  // Hunt controls.
-  huntMaxSteps: number;
-  huntScopeNote?: string;
-  huntPrepare: boolean;
-  huntPrepareTimeoutMs: number;
-  huntRefute: boolean;
-  huntAppeal: boolean;
+  // Audit controls.
+  auditMaxSteps: number;
+  auditScopeNote?: string;
+  auditPrepare: boolean;
+  auditPrepareTimeoutMs: number;
+  auditRefute: boolean;
+  auditAppeal: boolean;
   // Deep narrow-scope audit posture: obligation-driven, no breadth/wrap-up
   // pressure. Optionally pin the focus region; otherwise the model ranks and
   // picks the most soundness-critical region itself.
-  huntDeep: boolean;
-  huntDeepFocus?: string;
+  auditDeep: boolean;
+  auditDeepFocus?: string;
   // Map → dig flow (used when --deep runs without a pinned focus): map enumerates
   // an obligation/scope inventory, dig deep-audits the top scopes one at a time.
-  huntMapSteps: number;
-  huntDigSteps: number;
-  huntMaxScopes: number;
+  auditMapSteps: number;
+  auditDigSteps: number;
+  auditMaxScopes: number;
   // How many independent dig passes to run per scope; findings are unioned. Raises
   // recall on scopes where a single pass finds a subtle obligation only sometimes
   // (cumulative recall 1 - (1-p)^K) — a variance lever, not a bug-specific tweak.
-  huntDigSamples: number;
+  auditDigSamples: number;
   // How many scopes the dig phase audits in parallel. Each concurrent dig runs in
   // its own isolated workspace + session (and its own differential confirmation),
   // so they cannot corrupt each other's test files, build output, or findings.
   // 1 = sequential (default).
-  huntDigConcurrency: number;
+  auditDigConcurrency: number;
   // Re-enumerate the scope inventory from scratch instead of resuming the
   // persisted one (which would otherwise continue with the next un-audited scopes).
-  huntRemap: boolean;
+  auditRemap: boolean;
   // Manually pick specific scope ids from the persisted inventory to deep-audit
   // (the human-in-the-loop seam), instead of the automatic top-by-score selection.
-  huntScopeIds?: string[];
+  auditScopeIds?: string[];
   // VERIFY posture: path to a JSON file of suspected finding(s) to confirm-or-refute
   // by execution (write a PoC -> build -> run -> differential). Skips map/dig
   // enumeration; reuses the confirmation gate. The confirmation step the dig
   // produces on its own, runnable standalone against an existing suspected finding.
-  huntVerify?: string;
+  auditVerify?: string;
   // Per-role model assignment. A role (map/dig/refute) resolves to its own entry,
   // else `default`, else the top-level provider/auditModel/thinkingLevel. Nothing
   // is auto-downgraded: an unspecified role inherits the main model.
-  models?: Partial<Record<HuntRole, Partial<RoleModel>>>;
+  models?: Partial<Record<AuditRole, Partial<RoleModel>>>;
   dryRun: boolean;
 }
 
 // The phases that may run on different models. `map` = scope enumeration,
 // `dig` = per-scope deep audit, `refute` = independent refutation, `default` =
 // everything else / fallback.
-export type HuntRole = "default" | "map" | "dig" | "refute";
+export type AuditRole = "default" | "map" | "dig" | "refute";
 
 export interface RoleModel {
   provider: string;
@@ -78,7 +78,7 @@ export interface RoleModel {
 const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 /** Resolve the effective model for a phase: role entry → `default` entry → top-level config. */
-export function resolveRole(cfg: AuditorConfig, role: HuntRole): RoleModel {
+export function resolveRole(cfg: AuditorConfig, role: AuditRole): RoleModel {
   const roleCfg = cfg.models?.[role] ?? {};
   const def = cfg.models?.default ?? {};
   return {
@@ -89,7 +89,7 @@ export function resolveRole(cfg: AuditorConfig, role: HuntRole): RoleModel {
 }
 
 /** A copy of the config specialized to a role's model, so role-agnostic callers stay unchanged. */
-export function withRole(cfg: AuditorConfig, role: HuntRole): AuditorConfig {
+export function withRole(cfg: AuditorConfig, role: AuditRole): AuditorConfig {
   const resolved = resolveRole(cfg, role);
   return { ...cfg, provider: resolved.provider, auditModel: resolved.model, thinkingLevel: resolved.thinking };
 }
@@ -97,8 +97,8 @@ export function withRole(cfg: AuditorConfig, role: HuntRole): AuditorConfig {
 /** Parse a config-file `models` block into the validated per-role shape. */
 export function normalizeRoleModels(input: unknown): AuditorConfig["models"] | undefined {
   if (!input || typeof input !== "object") return undefined;
-  const out: Partial<Record<HuntRole, Partial<RoleModel>>> = {};
-  for (const role of ["default", "map", "dig", "refute"] as HuntRole[]) {
+  const out: Partial<Record<AuditRole, Partial<RoleModel>>> = {};
+  for (const role of ["default", "map", "dig", "refute"] as AuditRole[]) {
     const raw = (input as Record<string, unknown>)[role];
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
@@ -127,18 +127,18 @@ export function defaultConfig(): AuditorConfig {
     reproductionCommandTimeoutMs: 120_000,
     reproductionMaxFileBytes: 200_000,
     reproductionMaxLogBytes: 40_000,
-    huntMaxSteps: 40,
-    huntPrepare: true,
-    huntPrepareTimeoutMs: 600_000,
-    huntRefute: true,
-    huntAppeal: true,
-    huntDeep: false,
-    huntMapSteps: 20,
-    huntDigSteps: 30,
-    huntMaxScopes: 6,
-    huntDigSamples: 1,
-    huntDigConcurrency: 1,
-    huntRemap: false,
+    auditMaxSteps: 40,
+    auditPrepare: true,
+    auditPrepareTimeoutMs: 600_000,
+    auditRefute: true,
+    auditAppeal: true,
+    auditDeep: false,
+    auditMapSteps: 20,
+    auditDigSteps: 30,
+    auditMaxScopes: 6,
+    auditDigSamples: 1,
+    auditDigConcurrency: 1,
+    auditRemap: false,
     dryRun: false,
   };
 }
@@ -146,7 +146,7 @@ export function defaultConfig(): AuditorConfig {
 const MAX_CONTEXT_LIST_ITEMS = 24;
 const MAX_CONTEXT_FIELD_CHARS = 1600;
 
-/** Parse a configured/CLI project-context object into the bounded scope-note shape hunt uses. */
+/** Parse a configured/CLI project-context object into the bounded scope-note shape audit uses. */
 export function normalizeProjectContext(input: unknown): ProjectContext | undefined {
   if (!input || typeof input !== "object") return undefined;
   const raw = input as Record<string, unknown>;

@@ -29,13 +29,13 @@ export class MockAuditLlmClient implements LlmClient {
   }
 }
 
-const HUNT_SUCCESS_PATTERN = "autonomous hunt confirmed the missing constraint locally";
+const AUDIT_SUCCESS_PATTERN = "autonomous audit confirmed the missing constraint locally";
 
-// Deterministic agent for the thin hunt loop. It progresses by inspecting the
+// Deterministic agent for the thin audit loop. It progresses by inspecting the
 // transcript the loop feeds back, exercising pi-style primitives: read source,
 // write a local harness, run it with bash, write findings.json, then return done.
-// Keeps mock-hunt and tests fully offline.
-function huntActionFor(user: string): string {
+// Keeps mock-audit and tests fully offline.
+function auditActionFor(user: string): string {
   const action = (thought: string, tool: string, args: Record<string, unknown>): string => JSON.stringify({ thought, tool, args });
   // MAP phase: enumerate the scope inventory into scopes.json, then stop.
   if (user.includes("Phase: MAP")) {
@@ -73,18 +73,18 @@ function huntActionFor(user: string): string {
       path: "halo2_missing_constraint.rs",
     });
   }
-  if (!user.includes("hunt_repro.test.mjs")) {
+  if (!user.includes("audit_repro.test.mjs")) {
     return action("Write a local-only test harness in the sandbox workspace.", "write", {
-      path: "hunt_repro.test.mjs",
-      content: `import test from 'node:test';\n\ntest('${HUNT_SUCCESS_PATTERN}', () => {});\n`,
+      path: "audit_repro.test.mjs",
+      content: `import test from 'node:test';\n\ntest('${AUDIT_SUCCESS_PATTERN}', () => {});\n`,
     });
   }
   if (!user.includes("action: bash")) {
     return action("Prove the missing constraint with a local-only test before claiming it.", "bash", {
-      cmd: "node --test hunt_repro.test.mjs",
+      cmd: "node --test audit_repro.test.mjs",
       purpose: "confirm",
       expected_exit_code: 0,
-      success_patterns: [HUNT_SUCCESS_PATTERN],
+      success_patterns: [AUDIT_SUCCESS_PATTERN],
     });
   }
   if (!user.includes('"path":"findings.json"')) {
@@ -109,9 +109,9 @@ function huntActionFor(user: string): string {
 }
 
 function responseFor(tag: string, _user: string): string {
-  // The deterministic mock now only drives the hunt loop; the staged-pipeline
+  // The deterministic mock now only drives the audit loop; the staged-pipeline
   // tags (learn/enumerate/audit/verify/reproduce) were removed with that pipeline.
-  if (tag === "hunt") return huntActionFor(_user);
+  if (tag === "audit") return auditActionFor(_user);
   // Independent refutation: the mock skeptic cannot break the (genuinely correct) mock finding.
   if (tag.startsWith("refute_")) return JSON.stringify({ refuted: false, reason: "mock skeptic could not refute the confirmed finding" });
   return "";

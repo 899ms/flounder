@@ -2,7 +2,7 @@ import type { AuditorConfig } from "../config.js";
 import type { LlmClient } from "../types.js";
 import type { RunLogger } from "../trace/logger.js";
 import { extractJsonArray, extractJsonObject } from "../util/json.js";
-import { buildDeepKickoff, buildHuntKickoff, buildMapKickoff, buildVerifyKickoff, HUNT_DEEP_SYSTEM, HUNT_SYSTEM, HUNT_VERIFY_SYSTEM, MAP_SYSTEM, renderTranscript, type TranscriptStep } from "./prompts.js";
+import { buildDeepKickoff, buildAuditKickoff, buildMapKickoff, buildVerifyKickoff, AUDIT_DEEP_SYSTEM, AUDIT_SYSTEM, AUDIT_VERIFY_SYSTEM, MAP_SYSTEM, renderTranscript, type TranscriptStep } from "./prompts.js";
 import type { AgentTool, ToolContext } from "./tools.js";
 
 // Provider-agnostic ReAct driver. It runs on top of the plain text-in/text-out
@@ -11,12 +11,12 @@ import type { AgentTool, ToolContext } from "./tools.js";
 // action, run the tool, feed back the observation, enforce the step budget, and
 // record a replayable transcript. It never injects strategy.
 
-export interface HuntLoopResult {
+export interface AuditLoopResult {
   steps: TranscriptStep[];
   stoppedReason: "finished" | "step-budget" | "stalled";
 }
 
-export async function runHuntLoop(input: {
+export async function runAuditLoop(input: {
   cfg: AuditorConfig;
   llm: LlmClient;
   tools: AgentTool[];
@@ -35,9 +35,9 @@ export async function runHuntLoop(input: {
   verify?: string;
   /** Base backoff for transient-throttle retries; overridable for tests. */
   transientRetryBaseMs?: number;
-}): Promise<HuntLoopResult> {
+}): Promise<AuditLoopResult> {
   const transientRetryBaseMs = input.transientRetryBaseMs ?? 4000;
-  const systemPrompt = input.verify ? HUNT_VERIFY_SYSTEM : input.map ? MAP_SYSTEM : input.deep ? HUNT_DEEP_SYSTEM : HUNT_SYSTEM;
+  const systemPrompt = input.verify ? AUDIT_VERIFY_SYSTEM : input.map ? MAP_SYSTEM : input.deep ? AUDIT_DEEP_SYSTEM : AUDIT_SYSTEM;
   const toolsByName = new Map(input.tools.map((tool) => [tool.name, tool]));
   const kickoffCommon = {
     target: input.cfg.targetName,
@@ -53,7 +53,7 @@ export async function runHuntLoop(input: {
       ? buildMapKickoff(kickoffCommon)
       : input.deep
         ? buildDeepKickoff({ ...kickoffCommon, ...(input.deepFocus ? { deepFocus: input.deepFocus } : {}) })
-        : buildHuntKickoff(kickoffCommon);
+        : buildAuditKickoff(kickoffCommon);
   const steps: TranscriptStep[] = [];
   let consecutiveParseErrors = 0;
 
@@ -70,8 +70,8 @@ export async function runHuntLoop(input: {
     const ask = `Your audit is ending now. Output ONLY a JSON array for findings.json and nothing else (no prose, no fences): every confirmed finding AND every residual hypothesis you formed, each as {"title","severity","location","description","evidence","exploit_sketch","fix","confidence","command_id"?}. Include lower-confidence hypotheses with their location and why they are suspected. If you genuinely found nothing, output [].`;
     try {
       const raw = await input.llm.complete({
-        tag: "hunt_finalize",
-        system: HUNT_SYSTEM,
+        tag: "audit_finalize",
+        system: AUDIT_SYSTEM,
         user: `${kickoff}\n\n===== TRANSCRIPT SO FAR =====\n${renderTranscript(steps)}\n\n===== FINALIZE =====\n${ask}`,
         model: input.cfg.auditModel,
         maxTokens: input.cfg.maxTokens,
@@ -81,10 +81,10 @@ export async function runHuntLoop(input: {
       const items = extractJsonArray<unknown>(raw);
       if (Array.isArray(items)) {
         input.ctx.session.scratchFiles.set("findings.json", JSON.stringify(items));
-        await input.logger.event("hunt_finalize", { items: items.length });
+        await input.logger.event("audit_finalize", { items: items.length });
       }
     } catch (error) {
-      await input.logger.event("hunt_finalize_error", { error: error instanceof Error ? error.message.slice(0, 300) : String(error) });
+      await input.logger.event("audit_finalize_error", { error: error instanceof Error ? error.message.slice(0, 300) : String(error) });
     }
   };
   // Each phase (map, then each dig) is its own loop over the shared session. Clear
@@ -119,7 +119,7 @@ export async function runHuntLoop(input: {
     for (let attempt = 0; ; attempt += 1) {
       try {
         raw = await input.llm.complete({
-          tag: "hunt",
+          tag: "audit",
           system: systemPrompt,
           user,
           model: input.cfg.auditModel,
@@ -134,7 +134,7 @@ export async function runHuntLoop(input: {
         const message = error instanceof Error ? error.message : String(error);
         if (isTransientError(message) && attempt < MAX_TRANSIENT_RETRIES) {
           const waitMs = Math.min(60_000, transientRetryBaseMs * 2 ** attempt);
-          await input.logger.event("hunt_transient_retry", { step: n, attempt: attempt + 1, waitMs });
+          await input.logger.event("audit_transient_retry", { step: n, attempt: attempt + 1, waitMs });
           await sleep(waitMs);
           continue;
         }
@@ -143,7 +143,7 @@ export async function runHuntLoop(input: {
     }
     if (raw === undefined) {
       const message = modelError instanceof Error ? modelError.message : String(modelError);
-      await input.logger.event("hunt_model_error", { step: n, error: message.slice(0, 500) });
+      await input.logger.event("audit_model_error", { step: n, error: message.slice(0, 500) });
       steps.push({ n, thought: "", tool: "(model-error)", args: {}, observation: `model error: ${message.slice(0, 300)}` });
       if (++consecutiveParseErrors >= 3) return { steps, stoppedReason: "stalled" };
       continue;
@@ -160,7 +160,7 @@ export async function runHuntLoop(input: {
         observation:
           'error: could not parse a JSON action. Respond with exactly one object: {"thought": "...", "tool": "...", "args": {...}} or {"thought": "...", "done": true, "summary": "..."}',
       });
-      await input.logger.event("hunt_parse_error", { step: n });
+      await input.logger.event("audit_parse_error", { step: n });
       if (consecutiveParseErrors >= 3) return { steps, stoppedReason: "stalled" };
       continue;
     }
@@ -169,8 +169,8 @@ export async function runHuntLoop(input: {
     if (action.done) {
       input.ctx.session.finished = true;
       input.ctx.session.finishSummary = action.summary;
-      steps.push({ n, thought: action.thought, tool: "(done)", args: {}, observation: action.summary || "hunt finished." });
-      await input.logger.event("hunt_step", { step: n, tool: "(done)" });
+      steps.push({ n, thought: action.thought, tool: "(done)", args: {}, observation: action.summary || "audit finished." });
+      await input.logger.event("audit_step", { step: n, tool: "(done)" });
       await finalizeFindings();
       return { steps, stoppedReason: "finished" };
     }
@@ -195,7 +195,7 @@ export async function runHuntLoop(input: {
       observation = `error: tool "${action.tool}" failed: ${error instanceof Error ? error.message : String(error)}`;
     }
     steps.push({ n, thought: action.thought, tool: action.tool, args: action.args, observation });
-    await input.logger.event("hunt_step", { step: n, tool: action.tool });
+    await input.logger.event("audit_step", { step: n, tool: action.tool });
 
     if (input.ctx.session.finished) {
       await finalizeFindings();

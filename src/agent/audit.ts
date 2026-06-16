@@ -11,30 +11,30 @@ import { publicPath } from "../util/paths.js";
 import { listWorkspaceFiles, normalizeRelativePath, prepareSandboxWorkspace, writeSandboxFiles, type SandboxWorkspace } from "../security/sandbox.js";
 import { runDifferentialConfirmation, type DifferentialResult } from "./differential.js";
 import { runRefutation } from "./refutation.js";
-import { runHuntLoop } from "./loop.js";
+import { runAuditLoop } from "./loop.js";
 import { ProjectMemory } from "./memory.js";
 import { loadScopeInventory, saveScopeInventory, scopeProgress } from "./scope-store.js";
-import { isPiSessionProvider, runHuntSession, SessionLlmClient } from "./pi-session.js";
+import { isPiSessionProvider, runAuditSession, SessionLlmClient } from "./pi-session.js";
 import type { TranscriptStep } from "./prompts.js";
 import { buildTools, clearScratchFindings, dedupeFindings, ingestFindingsFromScratch, newSession, readScratchScopes, type AgentFinding, type AgentSession, type AuditScope, type ToolContext } from "./tools.js";
 
-// Orchestrates one autonomous hunt: load authorized material, give the model the
+// Orchestrates one autonomous audit: load authorized material, give the model the
 // capability surface, run the ReAct loop, then turn whatever it proved into the
 // same finding/summary/report/history artifacts the rest of the toolchain uses.
 // All discrimination about *what* is a bug comes from the model; this function
 // only wires capability, persistence, and reporting around it.
 
-export interface HuntResult {
+export interface AuditRunResult {
   runDir: string;
   summary: AuditSummary;
   /** Scope-inventory coverage for the resumable map → dig flow (omitted otherwise). */
   scopeCoverage?: { total: number; audited: number; pending: number };
 }
 
-export async function runHunt(
+export async function runAudit(
   cfg: AuditorConfig,
   options: { llm?: LlmClient; streamEvents?: boolean } = {},
-): Promise<HuntResult> {
+): Promise<AuditRunResult> {
   const startedAt = new Date();
   const logger = new RunLogger(cfg.outputDir, cfg.targetName, startedAt, { streamEvents: options.streamEvents ?? false });
   await logger.init();
@@ -42,18 +42,18 @@ export async function runHunt(
 
   const source = await loadSource(cfg.sourcePaths);
   const corpus = await loadCorpus(cfg.corpusPaths);
-  await logger.event("hunt_start", {
+  await logger.event("audit_start", {
     target: cfg.targetName,
     sourcePaths: cfg.sourcePaths.map((sourcePath) => publicPath(sourcePath)),
     corpusPaths: cfg.corpusPaths.map((corpusPath) => publicPath(corpusPath)),
     provider: cfg.provider,
     model: cfg.auditModel,
-    maxSteps: cfg.huntMaxSteps,
+    maxSteps: cfg.auditMaxSteps,
     sourceDocs: source.length,
     corpusDocs: corpus.length,
   });
 
-  if (source.length === 0) throw new Error("hunt requires at least one source file (use --source)");
+  if (source.length === 0) throw new Error("audit requires at least one source file (use --source)");
 
   const memory = new ProjectMemory(path.join(projectHistoryDir(historyLocation(cfg)), "memory.jsonl"));
   const session = newSession();
@@ -71,7 +71,7 @@ export async function runHunt(
     // root) when one is set, so a narrow audit scope can still compile; otherwise
     // it copies the audited source. The model still reads only `sourcePaths`.
     const workspaceRoots = cfg.buildRoot ? [cfg.buildRoot] : cfg.sourcePaths;
-    const workspace = await prepareSandboxWorkspace(workspaceRoots, logger.runDir, "hunt/workspace");
+    const workspace = await prepareSandboxWorkspace(workspaceRoots, logger.runDir, "audit/workspace");
     session.workspace = workspace;
     workspaceCwd = workspace.absolute;
     // Persistent, host-isolated package cache so dependency builds are downloaded
@@ -115,8 +115,8 @@ export async function runHunt(
       ...(opts.verifySeed ? { verify: opts.verifySeed } : {}),
     };
     if (!options.llm && isPiSessionProvider(phaseCfg.provider)) {
-      return runHuntSession({
-        cfg: { ...phaseCfg, huntMaxSteps: opts.maxSteps },
+      return runAuditSession({
+        cfg: { ...phaseCfg, auditMaxSteps: opts.maxSteps },
         ctx: phaseCtx,
         tools,
         logger,
@@ -131,7 +131,7 @@ export async function runHunt(
     if (llm && "setLogger" in llm && typeof (llm as { setLogger?: unknown }).setLogger === "function") {
       (llm as { setLogger(logger: RunLogger): void }).setLogger(logger);
     }
-    return runHuntLoop({
+    return runAuditLoop({
       cfg: phaseCfg,
       llm,
       tools,
@@ -153,25 +153,25 @@ export async function runHunt(
   // isolated workspaces, so the shared post-loop differential stage skips them.
   let digDifferentialDone = false;
 
-  if (cfg.huntVerify) {
+  if (cfg.auditVerify) {
     // VERIFY posture: confirm-or-refute existing suspected finding(s) by execution.
     // Skips map/dig enumeration; for each finding it runs a focused session seeded
     // with the claim ("write a PoC that triggers it, or refute it"), routed through
     // the same confirmation gate. The shared post-loop differential stage then
     // upgrades any confirmed-executable finding to confirmed-differential. This is
     // exactly the confirmation tail of a dig, runnable standalone on a prior finding.
-    const toVerify = await loadFindingsToVerify(cfg.huntVerify);
-    await logger.event("hunt_verify_start", { findings: toVerify.length });
+    const toVerify = await loadFindingsToVerify(cfg.auditVerify);
+    await logger.event("audit_verify_start", { findings: toVerify.length });
     const verifyCfg = withRole(cfg, "dig");
     const aggregated: AgentFinding[] = [];
     const aggregatedSteps: TranscriptStep[] = [];
     for (const [idx, finding] of toVerify.entries()) {
       clearScratchFindings(session);
-      const phase = await runPhase(verifyCfg, { mode: "verify", verifySeed: buildVerifySeed(finding), maxSteps: cfg.huntDigSteps });
+      const phase = await runPhase(verifyCfg, { mode: "verify", verifySeed: buildVerifySeed(finding), maxSteps: cfg.auditDigSteps });
       aggregatedSteps.push(...phase.steps);
       ingestFindingsFromScratch(session);
       for (const produced of session.findings) aggregated.push(produced);
-      await logger.event("hunt_verify_done", { index: idx + 1, of: toVerify.length, claim: String(finding.title ?? "").slice(0, 90), produced: session.findings.length });
+      await logger.event("audit_verify_done", { index: idx + 1, of: toVerify.length, claim: String(finding.title ?? "").slice(0, 90), produced: session.findings.length });
     }
     aggregated.forEach((produced, i) => {
       produced.id = `f${i + 1}`;
@@ -181,7 +181,7 @@ export async function runHunt(
     manualFindings = true;
     steps = aggregatedSteps;
     stoppedReason = "finished";
-  } else if (cfg.huntDeep && !cfg.huntDeepFocus) {
+  } else if (cfg.auditDeep && !cfg.auditDeepFocus) {
     // MAP → DIG, resumable. The complete scope inventory is persisted under the
     // project history dir; each run deep-audits the next batch of un-audited
     // scopes and updates their status. Re-running the same command therefore
@@ -189,20 +189,20 @@ export async function runHunt(
     // re-digging. --remap discards the persisted inventory and enumerates afresh.
     const inventoryDir = projectHistoryDir(historyLocation(cfg));
     const aggregatedSteps: TranscriptStep[] = [];
-    const picked = cfg.huntScopeIds ?? [];
-    scopeInventory = cfg.huntRemap ? [] : await loadScopeInventory(inventoryDir);
+    const picked = cfg.auditScopeIds ?? [];
+    scopeInventory = cfg.auditRemap ? [] : await loadScopeInventory(inventoryDir);
     const resuming = scopeInventory.length > 0;
     if (picked.length > 0 && !resuming) {
-      throw new Error("--scope needs an existing scope inventory; run `fsa run --deep` first to enumerate scopes, then pick from hunt_scopes.json.");
+      throw new Error("--scope needs an existing scope inventory; run `fsa run --deep` first to enumerate scopes, then pick from audit_scopes.json.");
     }
     if (!resuming) {
-      const mapPhase = await runPhase(withRole(cfg, "map"), { mode: "map", maxSteps: cfg.huntMapSteps });
+      const mapPhase = await runPhase(withRole(cfg, "map"), { mode: "map", maxSteps: cfg.auditMapSteps });
       scopeInventory = readScratchScopes(session);
       aggregatedSteps.push(...mapPhase.steps);
-      await logger.event("hunt_map_done", { scopes: scopeInventory.length });
+      await logger.event("audit_map_done", { scopes: scopeInventory.length });
       clearScratchFindings(session);
     } else {
-      await logger.event("hunt_map_resumed", { ...scopeProgress(scopeInventory) });
+      await logger.event("audit_map_resumed", { ...scopeProgress(scopeInventory) });
     }
     for (const scope of scopeInventory) if (!scope.status) scope.status = "pending";
 
@@ -214,20 +214,20 @@ export async function runHunt(
       const wanted = new Set(picked);
       toDig = scopeInventory.filter((scope) => wanted.has(scope.id));
       const missing = picked.filter((id) => !toDig.some((scope) => scope.id === id));
-      if (missing.length > 0) await logger.event("hunt_scope_unknown", { ids: missing });
+      if (missing.length > 0) await logger.event("audit_scope_unknown", { ids: missing });
       if (toDig.length === 0) throw new Error(`none of the requested scope ids exist in the inventory: ${picked.join(", ")}`);
-      await logger.event("hunt_scope_picked", { ids: toDig.map((scope) => scope.id) });
+      await logger.event("audit_scope_picked", { ids: toDig.map((scope) => scope.id) });
     } else {
       // Audit the highest-scored scopes not yet audited; the rest stay pending for
       // a future run (visible, never silently dropped).
       toDig = scopeInventory
         .filter((scope) => scope.status !== "audited")
         .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(1, cfg.huntMaxScopes));
+        .slice(0, Math.max(1, cfg.auditMaxScopes));
     }
     const aggregated: AgentFinding[] = [];
-    const samples = Math.max(1, Math.floor(cfg.huntDigSamples));
-    const concurrency = Math.max(1, Math.floor(cfg.huntDigConcurrency));
+    const samples = Math.max(1, Math.floor(cfg.auditDigSamples));
+    const concurrency = Math.max(1, Math.floor(cfg.auditDigConcurrency));
     // The region is the audit boundary; the map's obligation is only a starting
     // hint, never a limit (the dig system prompt's own rule is to independently
     // enumerate ALL of a region's obligations).
@@ -243,14 +243,14 @@ export async function runHunt(
       const stepsOut: TranscriptStep[] = [];
       for (let sample = 1; sample <= samples; sample += 1) {
         clearScratchFindings(sess);
-        const dig = await runPhase(digCfg, { mode: "dig", deepFocus, maxSteps: cfg.huntDigSteps }, over);
+        const dig = await runPhase(digCfg, { mode: "dig", deepFocus, maxSteps: cfg.auditDigSteps }, over);
         stepsOut.push(...dig.steps);
         ingestFindingsFromScratch(sess);
         for (const finding of sess.findings) {
           finding.scopeId = scope.id;
           perScope.push(finding);
         }
-        if (samples > 1) await logger.event("hunt_dig_sample", { scope: scope.id, sample, of: samples, findings: sess.findings.length });
+        if (samples > 1) await logger.event("audit_dig_sample", { scope: scope.id, sample, of: samples, findings: sess.findings.length });
       }
       return { findings: dedupeFindings(perScope), steps: stepsOut };
     };
@@ -261,7 +261,7 @@ export async function runHunt(
       // test files, build output, or findings. A bounded pool caps simultaneous digs.
       const workspaceRoots = cfg.buildRoot ? [cfg.buildRoot] : cfg.sourcePaths;
       const digScope = async (scope: AuditScope): Promise<{ findings: AgentFinding[]; steps: TranscriptStep[]; commandRuns: typeof session.commandRuns }> => {
-        const ws = await prepareSandboxWorkspace(workspaceRoots, logger.runDir, `hunt/dig-${safeScopeDir(scope.id)}`);
+        const ws = await prepareSandboxWorkspace(workspaceRoots, logger.runDir, `audit/dig-${safeScopeDir(scope.id)}`);
         const digSession = newSession();
         digSession.workspace = ws;
         digSession.baselineFiles = await listWorkspaceFiles(ws.absolute);
@@ -278,7 +278,7 @@ export async function runHunt(
         }
         // Each isolated dig session numbers its command runs cmd1.. independently, so
         // they collide across concurrent scopes. Namespace by scope id and rewrite
-        // each finding's commandRunId link so the aggregated hunt_command_runs.json
+        // each finding's commandRunId link so the aggregated audit_command_runs.json
         // keeps every dig's evidence and a confirmed finding's citation still resolves
         // (the differential above already ran with the original, per-session ids).
         const scopedRuns = digSession.commandRuns.map((run) => ({ ...run, id: `${scope.id}:${run.id}` }));
@@ -286,10 +286,10 @@ export async function runHunt(
           if (finding.commandRunId) finding.commandRunId = `${scope.id}:${finding.commandRunId}`;
         }
         scope.status = "audited";
-        await logger.event("hunt_dig_done", { scope: scope.id, samples, findings: unioned.length, concurrent: true });
+        await logger.event("audit_dig_done", { scope: scope.id, samples, findings: unioned.length, concurrent: true });
         return { findings: unioned, steps: digSteps, commandRuns: scopedRuns };
       };
-      await logger.event("hunt_dig_concurrent_start", { scopes: toDig.length, concurrency });
+      await logger.event("audit_dig_concurrent_start", { scopes: toDig.length, concurrency });
       const perScope = await runWithConcurrency(toDig, concurrency, digScope);
       // Merge every dig's findings, transcript steps, and command runs into the run
       // aggregates so the persisted artifacts reflect the concurrent digs, not just
@@ -308,7 +308,7 @@ export async function runHunt(
         aggregatedSteps.push(...digSteps);
         aggregated.push(...unioned);
         scope.status = "audited";
-        await logger.event("hunt_dig_done", { scope: scope.id, samples, findings: unioned.length });
+        await logger.event("audit_dig_done", { scope: scope.id, samples, findings: unioned.length });
       }
     }
     // Each scope/dig session numbered its findings independently (f1, f2, …), so
@@ -323,15 +323,15 @@ export async function runHunt(
     steps = aggregatedSteps;
     stoppedReason = "finished";
     await saveScopeInventory(inventoryDir, scopeInventory);
-    await logger.artifact("hunt_scopes.json", scopeInventory);
-    await logger.event("hunt_scope_progress", { ...scopeProgress(scopeInventory), resumed: resuming });
+    await logger.artifact("audit_scopes.json", scopeInventory);
+    await logger.event("audit_scope_progress", { ...scopeProgress(scopeInventory), resumed: resuming });
   } else {
     // Single run: breadth (default role) or a pinned deep-focus dig (dig role).
-    const pinned = Boolean(cfg.huntDeep && cfg.huntDeepFocus);
+    const pinned = Boolean(cfg.auditDeep && cfg.auditDeepFocus);
     const result = await runPhase(withRole(cfg, pinned ? "dig" : "default"), {
       mode: pinned ? "dig" : "breadth",
-      ...(cfg.huntDeepFocus ? { deepFocus: cfg.huntDeepFocus } : {}),
-      maxSteps: cfg.huntMaxSteps,
+      ...(cfg.auditDeepFocus ? { deepFocus: cfg.auditDeepFocus } : {}),
+      maxSteps: cfg.auditMaxSteps,
     });
     steps = result.steps;
     stoppedReason = result.stoppedReason;
@@ -339,8 +339,8 @@ export async function runHunt(
 
   const findingParse = manualFindings ? { parsed: session.findings.length, errors: [] } : ingestFindingsFromScratch(session);
   if (findingParse.errors.length > 0) {
-    await logger.artifact("hunt_findings_errors.json", findingParse.errors);
-    await logger.event("hunt_findings_parse_errors", { errors: findingParse.errors.length });
+    await logger.artifact("audit_findings_errors.json", findingParse.errors);
+    await logger.event("audit_findings_parse_errors", { errors: findingParse.errors.length });
   }
 
   // Differential confirmation: for confirmed-executable findings that declared a
@@ -357,14 +357,14 @@ export async function runHunt(
       differentials.push(result);
       if (result.confirmed) finding.confirmationStatus = "confirmed-differential";
     }
-    if (differentials.length > 0) await logger.artifact("hunt_differential.json", differentials);
+    if (differentials.length > 0) await logger.artifact("audit_differential.json", differentials);
   }
 
   // Independent refutation: a fresh-context skeptic re-derives the invariant and
   // tries to break each confirmed finding. A single-test confirmation it debunks
   // is downgraded to a hypothesis; an execution-proven (differential) finding it
   // disputes is kept but flagged for humans (execution is ground truth).
-  if (cfg.huntRefute) {
+  if (cfg.auditRefute) {
     const candidates = session.findings.filter((finding) => isConfirmed(finding.confirmationStatus));
     if (candidates.length > 0) {
       const refuteCfg = withRole(cfg, "refute");
@@ -394,14 +394,14 @@ export async function runHunt(
           finding.disputed = true;
         }
       }
-      if (verdicts.length > 0) await logger.artifact("hunt_refutation.json", verdicts);
+      if (verdicts.length > 0) await logger.artifact("audit_refutation.json", verdicts);
 
       // Appeal: a finding the skeptic rejected as UNREALISTIC gets ONE chance to
       // answer the objection with a faithful PoC. A real bug whose first PoC was
       // merely unfaithful survives; a vacuous one cannot. The original confirmation,
       // the refutation, and the appeal outcome are all kept (finding.appeal) so a
       // wrong refutation is recoverable, never silently lost.
-      if (cfg.huntAppeal !== false) {
+      if (cfg.auditAppeal !== false) {
         const appealCfg = withRole(cfg, "dig");
         for (const finding of candidates) {
           if (!finding.refutation?.refuted || !finding.refutation.unrealistic) continue;
@@ -412,7 +412,7 @@ export async function runHunt(
           const mainCount = session.counters.finding;
           clearScratchFindings(session);
           session.findings = [];
-          await runPhase(appealCfg, { mode: "verify", verifySeed: buildAppealSeed(finding, critique), maxSteps: cfg.huntDigSteps });
+          await runPhase(appealCfg, { mode: "verify", verifySeed: buildAppealSeed(finding, critique), maxSteps: cfg.auditDigSteps });
           ingestFindingsFromScratch(session);
           const appealOut = session.findings;
           session.findings = mainFindings;
@@ -440,7 +440,7 @@ export async function runHunt(
               ? "rebuilt a faithful PoC that survived re-refutation"
               : reConfirmed?.refutation?.reason ?? "no faithful PoC produced on appeal",
           };
-          await logger.event("hunt_appeal", { findingId: finding.id, upheld });
+          await logger.event("audit_appeal", { findingId: finding.id, upheld });
         }
         clearScratchFindings(session);
       }
@@ -454,10 +454,10 @@ export async function runHunt(
   const confirmed = session.findings.filter((finding) => isConfirmed(finding.confirmationStatus));
   const hypotheses = session.findings.filter((finding) => !isConfirmed(finding.confirmationStatus));
 
-  await logger.artifact("hunt_transcript.json", { stoppedReason, steps });
-  await logger.artifact("hunt_findings.json", confirmed);
-  await logger.artifact("hunt_hypotheses.json", hypotheses);
-  await logger.artifact("hunt_command_runs.json", session.commandRuns);
+  await logger.artifact("audit_transcript.json", { stoppedReason, steps });
+  await logger.artifact("audit_findings.json", confirmed);
+  await logger.artifact("audit_hypotheses.json", hypotheses);
+  await logger.artifact("audit_command_runs.json", session.commandRuns);
 
   const summary = buildSummary(confirmed, hypotheses, steps);
   await logger.artifact("summary.json", summary);
@@ -471,13 +471,13 @@ export async function runHunt(
   // suspected hypotheses, and the scope-coverage map, aggregated across all digs
   // (including concurrent ones).
   await logger.artifact(
-    "hunt_report.md",
+    "audit_report.md",
     renderRunReport({ target: cfg.targetName, provider: cfg.provider, model: cfg.auditModel, confirmed, hypotheses, scopes: scopeInventory, reportName: reportArtifactName }),
   );
 
   await persistFindingMemory(memory, confirmed, hypotheses);
 
-  await logger.event("hunt_done", {
+  await logger.event("audit_done", {
     stoppedReason,
     steps: steps.length,
     findings: confirmed.length,
@@ -603,7 +603,7 @@ async function persistFindingMemory(memory: ProjectMemory, confirmed: AgentFindi
     await memory.remember({
       note: `${finding.title} (${finding.confirmationStatus}) at ${finding.location}: ${finding.description}`.slice(0, 600),
       kind: "finding",
-      tags: ["hunt", finding.severity, finding.confirmationStatus],
+      tags: ["audit", finding.severity, finding.confirmationStatus],
       sourceRef: finding.location,
     });
   }
@@ -613,7 +613,7 @@ async function persistFindingMemory(memory: ProjectMemory, confirmed: AgentFindi
     await memory.remember({
       note: `Unconfirmed hypothesis: ${finding.title} at ${finding.location}: ${finding.description}`.slice(0, 600),
       kind: "note",
-      tags: ["hunt", "hypothesis", finding.severity],
+      tags: ["audit", "hypothesis", finding.severity],
       sourceRef: finding.location,
     });
   }
@@ -624,7 +624,7 @@ function isConfirmed(status: ConfirmationStatus): boolean {
 }
 
 // --verify input: a JSON file holding one suspected finding, an array of them, or
-// a {findings:[...]} object (so a prior run's hunt_findings.json / hunt_hypotheses.json
+// a {findings:[...]} object (so a prior run's audit_findings.json / audit_hypotheses.json
 // can be fed directly). Returns the loose finding records to confirm-or-refute.
 async function loadFindingsToVerify(filePath: string): Promise<Array<Record<string, unknown>>> {
   const { readFile } = await import("node:fs/promises");
@@ -720,7 +720,7 @@ function toRankedFinding(finding: AgentFinding): RankedFinding {
 
 function resolveScopeNote(cfg: AuditorConfig): string {
   const parts: string[] = [];
-  if (cfg.huntScopeNote) parts.push(cfg.huntScopeNote);
+  if (cfg.auditScopeNote) parts.push(cfg.auditScopeNote);
   if (cfg.projectContext.summary) parts.push(cfg.projectContext.summary);
   if (cfg.projectContext.focusAreas?.length) parts.push(`Focus areas: ${cfg.projectContext.focusAreas.join("; ")}`);
   if (cfg.projectContext.outOfScope?.length) parts.push(`Out of scope: ${cfg.projectContext.outOfScope.join("; ")}`);

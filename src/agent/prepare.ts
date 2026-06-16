@@ -18,7 +18,7 @@ import type { ReproductionCommand } from "../types.js";
 // not pass through the agent bash allowlist. They do execute the target's own
 // dependency build scripts in the isolated workspace (HOME and caches already
 // point inside it); that is inherent to preparing a real toolchain and is why the
-// step is gated by AuditorConfig.huntPrepare.
+// step is gated by AuditorConfig.auditPrepare.
 
 const SKIP_DIRS = new Set([".git", ".hg", ".svn", "node_modules", "vendor", "target", "build", "dist", "coverage", "runs", "__pycache__", ".cache", ".next", ".nuxt", ".turbo"]);
 const MAX_SCAN_DEPTH = 6;
@@ -45,18 +45,18 @@ export interface PrepareReport {
 export async function prepareWorkspaceToolchain(input: { workspace: SandboxWorkspace; cfg: AuditorConfig; logger: RunLogger; cacheDir?: string }): Promise<PrepareReport> {
   const plans = await detectToolchains(input.workspace.absolute);
   if (plans.length === 0) {
-    await input.logger.event("hunt_prepare_skipped", { reason: "no supported toolchain manifest detected" });
+    await input.logger.event("audit_prepare_skipped", { reason: "no supported toolchain manifest detected" });
     return { ran: false, detected: [], results: [] };
   }
 
-  await input.logger.event("hunt_prepare_start", { toolchains: plans.map((plan) => plan.toolchain), timeoutMs: input.cfg.huntPrepareTimeoutMs });
+  await input.logger.event("audit_prepare_start", { toolchains: plans.map((plan) => plan.toolchain), timeoutMs: input.cfg.auditPrepareTimeoutMs });
   const results: PrepareCommandResult[] = [];
   for (const plan of plans) {
     for (const argv of plan.commands) {
       const command: ReproductionCommand = {
         program: argv[0] ?? "",
         args: argv.slice(1),
-        timeoutMs: input.cfg.huntPrepareTimeoutMs,
+        timeoutMs: input.cfg.auditPrepareTimeoutMs,
         expectedExitCode: 0,
         ...(plan.cwd ? { cwd: plan.cwd } : {}),
       };
@@ -72,14 +72,14 @@ export async function prepareWorkspaceToolchain(input: { workspace: SandboxWorks
         ok,
       };
       results.push(record);
-      await input.logger.event("hunt_prepare_command", { toolchain: plan.toolchain, command: record.command, cwd: record.cwd, exitCode: run.exitCode, timedOut: run.timedOut, ok });
+      await input.logger.event("audit_prepare_command", { toolchain: plan.toolchain, command: record.command, cwd: record.cwd, exitCode: run.exitCode, timedOut: run.timedOut, ok });
       // If dependency fetch fails or times out, later commands for the same
       // toolchain will too; stop this toolchain but keep warming the others.
       if (!ok) break;
     }
   }
 
-  await input.logger.artifact("hunt_prepare.json", { detected: plans.map((plan) => plan.toolchain), results });
+  await input.logger.artifact("audit_prepare.json", { detected: plans.map((plan) => plan.toolchain), results });
   return { ran: true, detected: plans.map((plan) => plan.toolchain), results };
 }
 

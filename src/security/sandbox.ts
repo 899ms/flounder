@@ -17,7 +17,7 @@ export interface SandboxWorkspace {
 /**
  * Copy the authorized source roots into an isolated workspace under `runDir`.
  * `relativeDir` is a run-relative POSIX path (for example
- * `reproduction/<id>/workspace` or `hunt/<id>/workspace`).
+ * `reproduction/<id>/workspace` or `audit/<id>/workspace`).
  */
 export async function prepareSandboxWorkspace(sourcePaths: string[], runDir: string, relativeDir: string): Promise<SandboxWorkspace> {
   const relative = relativeDir;

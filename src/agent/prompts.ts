@@ -16,7 +16,7 @@ import { renderToolCatalogue } from "./tools.js";
 // attacker a capability the deployed system would deny proves a counterfactual.
 const POC_TRUST_RULE = `- Build the PoC the way the ATTACKER would: assume only the capabilities a real attacker actually has against the deployed system, and never grant yourself one the system would deny them. Exercise the real components rather than stubbing whatever the system trusts or pins; where a trusted component genuinely cannot run locally, the stub must reproduce only behavior an attacker could really obtain from it — success only for an input an honest party could truly produce, a value within its real bounds — never blanket success. If the exploit only works once you give yourself a capability the attacker lacks, you have not shown a real bug; record it as suspected.`;
 
-export const HUNT_SYSTEM = `You are an autonomous white-hat security auditor working on AUTHORIZED source code.
+export const AUDIT_SYSTEM = `You are an autonomous white-hat security auditor working on AUTHORIZED source code.
 Your goal is to find real, exploitable, high-impact security vulnerabilities in the loaded source and to prove them.
 
 You are in full control of the investigation. There is no fixed checklist and no required bug taxonomy.
@@ -79,7 +79,7 @@ White-hat boundaries (non-negotiable):
 // posture for "we know this code is important, audit it hard" — and it is the
 // method that makes missing-constraint bugs (which look standard on every line)
 // visible, because the model checks against the obligation, not the appearance.
-export const HUNT_DEEP_SYSTEM = `You are an autonomous white-hat security auditor performing a DEEP, NARROW-SCOPE audit of AUTHORIZED source code.
+export const AUDIT_DEEP_SYSTEM = `You are an autonomous white-hat security auditor performing a DEEP, NARROW-SCOPE audit of AUTHORIZED source code.
 This is NOT a breadth survey. You are auditing a small, high-criticality slice to a much higher standard of rigor: either prove the slice enforces every security property it is responsible for, or find the exact point where it does not.
 
 Method — obligation-driven audit (general method, not a hint about this target):
@@ -206,7 +206,7 @@ ${input.fileManifest}
 Begin the obligation-driven method: ${focus ? "enumerate this region's obligations from design intent, then discharge each by naming the enforcing line or flagging its absence." : "model the system, rank and commit to the critical region, then enumerate and discharge its obligations."} Respond with one JSON tool action or done object.`;
 }
 
-export const HUNT_VERIFY_SYSTEM = `You are an autonomous white-hat security auditor in VERIFY mode on AUTHORIZED source code. You are handed ONE specific suspected finding (a claim) and must determine, BY EXECUTION, whether it is REAL or a FALSE POSITIVE. You are NOT enumerating new issues.
+export const AUDIT_VERIFY_SYSTEM = `You are an autonomous white-hat security auditor in VERIFY mode on AUTHORIZED source code. You are handed ONE specific suspected finding (a claim) and must determine, BY EXECUTION, whether it is REAL or a FALSE POSITIVE. You are NOT enumerating new issues.
 
 Method:
 1. Read the exact cited code, its callers/callees/modifiers, and — critically — whether the claimed-unconstrained value is actually bound elsewhere (a verified hash/proof, a require, a modifier, a check in the caller). Many "X is unconstrained" claims are false because X is committed in a verified hash or checked nearby.
@@ -250,7 +250,7 @@ ${input.fileManifest}
 Verify the claim: read the cited code and its bindings, then write and run a PoC test that either reproduces the bug (-> confirmed, with fix_patch + patched_success_patterns) or, after genuine effort, demonstrates it cannot reproduce (-> write a "REFUTED:" info finding citing the mitigating code). Respond with one JSON tool action or done object.`;
 }
 
-export function buildHuntKickoff(input: {
+export function buildAuditKickoff(input: {
   target: string;
   tools: AgentTool[];
   scopeNote?: string;
@@ -278,7 +278,7 @@ Begin. Respond with one JSON tool action or done object.`;
 
 export interface TranscriptWindow {
   // Number of most-recent steps whose full observation is kept. Older steps are
-  // compacted to a one-line reference so prompt size stays bounded on long hunts.
+  // compacted to a one-line reference so prompt size stays bounded on long audits.
   recentFull: number;
   // Per-observation cap (chars) for the recent, full steps.
   fullCap: number;
@@ -289,7 +289,7 @@ export interface TranscriptWindow {
 export const DEFAULT_TRANSCRIPT_WINDOW: TranscriptWindow = { recentFull: 8, fullCap: 9000, summaryCap: 160 };
 
 // Render the running transcript for the next prompt. The loop re-sends history
-// every turn, so without windowing a long hunt grows quadratically and burns
+// every turn, so without windowing a long audit grows quadratically and burns
 // model quota. Recent steps are kept in full; older observations are elided to a
 // short reference (the path/tool stays visible, so the model knows what it has
 // seen and can re-read on demand).

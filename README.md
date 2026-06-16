@@ -98,7 +98,7 @@ All modes share the tools, the confirmation gate, and the local-only boundary.
 | `--deep` (map → dig) | **the default for a real audit** — MAP enumerates and scores a complete scope inventory; DIG deep-audits the highest-scored scopes obligation-by-obligation and execution-confirms. Resumable, never silently drops a scope. |
 | `--deep-focus <region>` | skip enumeration; deep-audit one region you already care about |
 | `--scope <id,...>` | after a `--deep` map, dig specific inventory items (the human-in-the-loop pick over the complete map) |
-| `--verify <findings.json>` | confirm-or-refute existing suspected findings by execution — the standalone confirmation step on a prior run's `hunt_findings.json` |
+| `--verify <findings.json>` | confirm-or-refute existing suspected findings by execution — the standalone confirmation step on a prior run's `audit_findings.json` |
 
 ### Most effective setup
 
@@ -134,24 +134,24 @@ fsa run --deep \
 ### Local checks
 
 ```bash
-npm run mock-hunt     # offline smoke test with the deterministic mock model
+npm run mock-audit     # offline smoke test with the deterministic mock model
 npm run check:public  # public-surface scan for secrets and local paths
 npm run verify        # full local verification gate
 ```
 
 ## Reproduction
 
-Reproduction is part of the hunt itself: the agent calls `bash` to write and run local tests in the copied workspace, and a finding only reaches `confirmed-executable` when a `purpose=confirm` test passes. The agent writes files only inside a copied workspace under the run directory; it never modifies the target source tree. Command safety blocks public-network broadcast, transfer, credential, persistence, and exploit-optimization flows.
+Reproduction is part of the audit itself: the agent calls `bash` to write and run local tests in the copied workspace, and a finding only reaches `confirmed-executable` when a `purpose=confirm` test passes. The agent writes files only inside a copied workspace under the run directory; it never modifies the target source tree. Command safety blocks public-network broadcast, transfer, credential, persistence, and exploit-optimization flows.
 
 ## Domain Profiles
 
-Config files under `configs/` can still provide source paths, corpus paths, project context, and optional domain hints. In hunt mode, these are context, not a framework-owned checklist.
+Config files under `configs/` can still provide source paths, corpus paths, project context, and optional domain hints. In audit mode, these are context, not a framework-owned checklist.
 
 Examples:
 
 ```bash
 fsa run \
-  --config ./configs/solidity-contract-hunt.default.json \
+  --config ./configs/solidity-contract-audit.default.json \
   --target contract-audit \
   --source <contract-source-paths...> \
   --corpus <specs-docs-and-prior-audit-material...> \
@@ -161,7 +161,7 @@ fsa run \
 
 ```bash
 fsa run \
-  --config ./configs/cairo-starknet-hunt.default.json \
+  --config ./configs/cairo-starknet-audit.default.json \
   --target starknet-audit \
   --source <cairo-and-contract-source-paths...> \
   --corpus <specs-docs-and-prior-audit-material...> \
@@ -183,11 +183,11 @@ The extension registers `fsa_run` and installs the shared command-safety guardra
 
 ## Outputs
 
-Each hunt writes:
+Each audit writes:
 
-- `hunt_transcript.json`: replayable action/observation trace.
-- `hunt_findings.json`: raw agent-reported findings.
-- `hunt_command_runs.json`: local sandbox command records.
+- `audit_transcript.json`: replayable action/observation trace.
+- `audit_findings.json`: raw agent-reported findings.
+- `audit_command_runs.json`: local sandbox command records.
 - `summary.json`: ranked finding summary and coverage.
 - `report_<id>.md`: private disclosure drafts.
 - `events.jsonl` and `calls/*.json`: audit trace and model-call records.
@@ -199,13 +199,13 @@ Run artifacts are private by default. Redact before sharing outside the trusted 
 ## Library API
 
 ```ts
-import { defaultConfig, runHunt, MockAuditLlmClient } from "full-stack-auditor";
+import { defaultConfig, runAudit, MockAuditLlmClient } from "full-stack-auditor";
 
 const cfg = defaultConfig();
 cfg.targetName = "example";
 cfg.sourcePaths = ["./fixtures"];
 
-const result = await runHunt(cfg, { llm: new MockAuditLlmClient() });
+const result = await runAudit(cfg, { llm: new MockAuditLlmClient() });
 console.log(result.runDir);
 ```
 

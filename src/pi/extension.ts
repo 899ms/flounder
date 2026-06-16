@@ -1,15 +1,15 @@
 import { isToolCallEventType, type ExtensionAPI, type ToolCallEvent, type UserBashEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { defaultConfig } from "../config.js";
-import { runHunt } from "../agent/hunt.js";
+import { runAudit } from "../agent/audit.js";
 import { analyzeCommandSafety } from "../security/policy.js";
 
 export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "fsa_run",
-    label: "Autonomous Security Hunt",
+    label: "Autonomous Security Audit",
     description:
-      "Run the thin agentic hunt: the model drives its own investigation with pi-style read/write/edit/bash tools. The framework supplies capability and verification, not a checklist. Verification is local-only; a finding only reaches confirmed-executable when a sandboxed local command passes. Requires a live model provider.",
+      "Run the thin agentic audit: the model drives its own investigation with pi-style read/write/edit/bash tools. The framework supplies capability and verification, not a checklist. Verification is local-only; a finding only reaches confirmed-executable when a sandboxed local command passes. Requires a live model provider.",
     parameters: Type.Object({
       target: Type.String({ description: "Target name used for run artifacts and durable memory." }),
       sourcePaths: Type.Array(Type.String(), { description: "Local authorized source files or directories to audit." }),
@@ -28,12 +28,12 @@ export default function fullStackAuditorExtension(pi: ExtensionAPI): void {
       cfg.corpusPaths = params.corpusPaths ?? [];
       cfg.provider = params.provider ?? cfg.provider;
       if (params.model) cfg.auditModel = params.model;
-      if (typeof params.maxSteps === "number" && Number.isFinite(params.maxSteps)) cfg.huntMaxSteps = Math.max(1, Math.floor(params.maxSteps));
-      if (params.scopeNote) cfg.huntScopeNote = params.scopeNote;
+      if (typeof params.maxSteps === "number" && Number.isFinite(params.maxSteps)) cfg.auditMaxSteps = Math.max(1, Math.floor(params.maxSteps));
+      if (params.scopeNote) cfg.auditScopeNote = params.scopeNote;
       cfg.outputDir = params.outputDir ?? cfg.outputDir;
       if (params.historyDir !== undefined) cfg.historyDir = params.historyDir;
 
-      const result = await runHunt(cfg);
+      const result = await runAudit(cfg);
       const confirmed = result.summary.findings.filter((finding) => finding.confirmationStatus === "confirmed-executable").length;
       return {
         content: [

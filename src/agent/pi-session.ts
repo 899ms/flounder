@@ -33,7 +33,7 @@ export function isPiSessionProvider(provider: string): boolean {
   }
 }
 
-export async function runHuntSession(input: {
+export async function runAuditSession(input: {
   cfg: AuditorConfig;
   ctx: ToolContext;
   tools: AgentTool[];
@@ -48,7 +48,7 @@ export async function runHuntSession(input: {
   verify?: string;
 }): Promise<SessionDriverResult> {
   const model = getModelSafe(input.cfg.provider, input.cfg.auditModel);
-  if (!model) throw new Error(`hunt session: unknown provider/model ${input.cfg.provider}/${input.cfg.auditModel}`);
+  if (!model) throw new Error(`audit session: unknown provider/model ${input.cfg.provider}/${input.cfg.auditModel}`);
 
   const steps: TranscriptStep[] = [];
   let stepNo = 0;
@@ -69,7 +69,7 @@ export async function runHuntSession(input: {
 
   // Budget: the continuous session runs until the model stops on its own. Cap the
   // number of model turns so a real run cannot grow unbounded in cost/time.
-  const maxTurns = Math.max(1, Math.floor(input.cfg.huntMaxSteps));
+  const maxTurns = Math.max(1, Math.floor(input.cfg.auditMaxSteps));
   // Forced-finalize budget: the loop driver nudges and force-writes when its step
   // budget runs out, but a continuous session has no such hook — on a large
   // codebase the model can spend its whole turn budget exploring and stop (or be
@@ -84,9 +84,9 @@ export async function runHuntSession(input: {
   let finalizeAborted = false;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
-      void input.logger.event("hunt_step", { step: stepNo + 1, tool: event.toolName });
+      void input.logger.event("audit_step", { step: stepNo + 1, tool: event.toolName });
     } else if (event.type === "tool_execution_end" && event.isError) {
-      void input.logger.event("hunt_tool_error", { tool: event.toolName });
+      void input.logger.event("audit_tool_error", { tool: event.toolName });
     } else if (event.type === "turn_end") {
       if (finalizing) {
         finalizeTurns += 1;
@@ -99,7 +99,7 @@ export async function runHuntSession(input: {
       turns += 1;
       if (turns >= maxTurns && !budgetAborted) {
         budgetAborted = true;
-        void input.logger.event("hunt_session_budget", { turns, maxTurns });
+        void input.logger.event("audit_session_budget", { turns, maxTurns });
         void session.abort();
       }
     }
@@ -110,7 +110,7 @@ export async function runHuntSession(input: {
   // map owes scopes.json; every other phase (breadth/deep/dig) owes findings.json —
   // a dig can otherwise spend its whole budget exploring and persist zero obligation
   // analysis (observed: a 50-turn Vault dig wrote no hypotheses). The scratch read is
-  // the same in-memory source hunt.ts reads after this returns, so the empty checks
+  // the same in-memory source audit.ts reads after this returns, so the empty checks
   // are exact. The findings finalize must NOT bypass the confirmation gate: it asks
   // only for the obligation analysis (discharged or suspected), never for a confirmed
   // status without a passing test.
@@ -119,24 +119,24 @@ export async function runHuntSession(input: {
     if (input.map) {
       if (readScratchScopes(input.ctx.session).length > 0) return;
       finalizing = true;
-      await input.logger.event("hunt_map_finalize", { reason: "no scopes written before stop" });
+      await input.logger.event("audit_map_finalize", { reason: "no scopes written before stop" });
       try {
         await session.prompt(MAP_FINALIZE_PROMPT);
       } catch {
         // best-effort: an abort during the finalize turns is expected
       }
-      await input.logger.event("hunt_map_finalize_done", { scopes: readScratchScopes(input.ctx.session).length });
+      await input.logger.event("audit_map_finalize_done", { scopes: readScratchScopes(input.ctx.session).length });
       return;
     }
     if (scratchHasFindings(input.ctx.session)) return;
     finalizing = true;
-    await input.logger.event("hunt_findings_finalize", { reason: "no findings written before stop" });
+    await input.logger.event("audit_findings_finalize", { reason: "no findings written before stop" });
     try {
       await session.prompt(FINDINGS_FINALIZE_PROMPT);
     } catch {
       // best-effort
     }
-    await input.logger.event("hunt_findings_finalize_done", { hasFindings: scratchHasFindings(input.ctx.session) });
+    await input.logger.event("audit_findings_finalize_done", { hasFindings: scratchHasFindings(input.ctx.session) });
   };
 
   try {
@@ -154,12 +154,12 @@ export async function runHuntSession(input: {
     } catch (error) {
       if (!budgetAborted) {
         const message = error instanceof Error ? error.message : String(error);
-        await input.logger.event("hunt_session_error", { error: message.slice(0, 500) });
+        await input.logger.event("audit_session_error", { error: message.slice(0, 500) });
         // Authentication is an environment setup step, not a finding. Surface it
         // loudly and actionably instead of silently producing zero findings.
         if (looksLikeAuthError(message)) {
           throw new Error(
-            `hunt session could not authenticate provider "${input.cfg.provider}". Log pi into the provider (e.g. \`pi\` then /login for ${input.cfg.provider}), or run with --mock-llm for an offline check. Underlying: ${message.slice(0, 300)}`,
+            `audit session could not authenticate provider "${input.cfg.provider}". Log pi into the provider (e.g. \`pi\` then /login for ${input.cfg.provider}), or run with --mock-llm for an offline check. Underlying: ${message.slice(0, 300)}`,
           );
         }
         steps.push({ n: stepNo + 1, thought: "", tool: "(session-error)", args: {}, observation: message.slice(0, 500) });
