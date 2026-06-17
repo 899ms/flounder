@@ -256,7 +256,15 @@ fsa db runs <target>            # run history for a project
 fsa db findings <target>        # findings with their status timeline
 ```
 
-This is the backend a UI reads from; it is written live by each run (not rebuilt from files).
+This is the backend the UI reads from; it is written live by each run (not rebuilt from files).
+
+### UI
+
+```bash
+fsa ui                 # local dashboard at http://127.0.0.1:4500 (--port, --out to change)
+```
+
+A localhost-only web dashboard to track and drive audits across projects: per-project scope coverage (mapped vs audited, live), findings with their status timeline, and confirm decisions, updating in real time via SSE. Launch a new run, **Continue** (resume — audits the next batch of scopes) or **Restart** (re-map), and stop a running one — all from the UI, which shells out to the same `fsa` commands. It binds to localhost only (it can spawn audit processes).
 
 ## Library API
 

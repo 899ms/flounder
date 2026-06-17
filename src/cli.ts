@@ -6,6 +6,7 @@ import { runConfirm } from "./agent/confirm.js";
 import { MockAuditLlmClient } from "./llm/mock.js";
 import { importRunToProjectHistory, projectHistoryManifestPath } from "./trace/history.js";
 import { MetadataStore } from "./db/store.js";
+import { startUiServer } from "./server/app.js";
 
 async function main(argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
@@ -21,6 +22,16 @@ async function main(argv: string[]): Promise<void> {
 
   if (cmd === "db") {
     runDbCommand(rest);
+    return;
+  }
+
+  if (cmd === "ui") {
+    // Local web app: track/drive audits across projects. Keeps running (the server holds
+    // the event loop open) until interrupted. Binds to localhost only.
+    const port = readIntFlag(rest, "--port");
+    const out = readFlag(rest, "--out") ?? "runs";
+    startUiServer({ out, ...(port !== undefined ? { port } : {}) });
+    await new Promise(() => {}); // run until the process is interrupted
     return;
   }
 
@@ -353,6 +364,7 @@ Usage:
   fsa confirm <run-dir> --source <paths...>                                  open-world: reproduce a run's findings on the real target
   fsa history import-run --target <name> --run <dir>
   fsa db      [projects | runs [<target>] | findings <target>]               read the SQLite tracking store (projects, runs, coverage, findings)
+  fsa ui      [--port <n>] [--out <dir>]                                      local web dashboard: track/drive audits across projects (localhost only)
 
 Sealed vs open world:
   run / map / audit are NETWORK-SEALED — the model finds and proves bugs blind, with no
