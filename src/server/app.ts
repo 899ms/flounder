@@ -6,7 +6,8 @@
 // http + a vanilla SPA. Binds to localhost only (it can spawn audit processes).
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, createReadStream, statSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MetadataStore, type RunKind } from "../db/store.js";
 import { RunManager, type LaunchSpec } from "./run-manager.js";
@@ -151,6 +152,12 @@ const ROUTES: Route[] = [
     params: { id: "run id" },
     handler: runStop,
   }),
+  route({
+    method: "GET", path: "/api/runs/:id/log",
+    summary: "SSE stream of a run's live activity, tailed from its event log: the model's thinking + output blocks (audit_thinking / audit_text), tool calls (audit_step), and milestones. Streams existing entries then new ones as they happen.",
+    params: { id: "run id" },
+    handler: runLog,
+  }),
 
   route({ method: "GET", path: "/api/active", summary: "Currently-running processes the run-manager is supervising.", handler: (c) => sendJson(c.res, 200, { active: c.manager.active() }) }),
   route({ method: "GET", path: "/api/stream", summary: "Server-sent events: the project snapshot + active list, pushed ~1/s for live updates.", handler: (c) => streamSnapshots(c.res, c.store, c.manager) }),
@@ -282,6 +289,52 @@ function runStop(c: Ctx): void {
   if (!run) return sendJson(c.res, 404, { error: "no such run" });
   if (typeof run.pid !== "number") return sendJson(c.res, 409, { error: "run has no live process to stop" });
   sendJson(c.res, 200, { stopped: c.manager.kill(run.pid) });
+}
+
+function runLog(c: Ctx): void {
+  const run = c.store.getRun(Number(c.params.id));
+  if (!run || typeof run.run_dir !== "string") return sendJson(c.res, 404, { error: "no such run (or it has no run dir)" });
+  streamRunLog(c.res, run.run_dir);
+}
+
+// Tail a run's events.jsonl over SSE: send existing lines, then poll for appended bytes and
+// stream new ones. The run process (separate from this server) appends the model's thinking/
+// output blocks + tool calls there, so this is the live-activity channel for the UI.
+function streamRunLog(res: ServerResponse, runDir: string): void {
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+  const file = path.join(runDir, "events.jsonl");
+  let offset = 0;
+  let buf = "";
+  const pump = (): void => {
+    let size: number;
+    try {
+      size = statSync(file).size;
+    } catch {
+      return; // not created yet
+    }
+    if (size < offset) {
+      offset = 0;
+      buf = "";
+    }
+    if (size <= offset) return;
+    const start = offset;
+    offset = size;
+    const stream = createReadStream(file, { start, end: size - 1, encoding: "utf8" });
+    let chunk = "";
+    stream.on("data", (d) => {
+      chunk += d;
+    });
+    stream.on("end", () => {
+      buf += chunk;
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) res.write(`data: ${line}\n\n`);
+    });
+    stream.on("error", () => {});
+  };
+  pump();
+  const timer = setInterval(pump, 700);
+  res.on("close", () => clearInterval(timer));
 }
 
 // ---- shared -----------------------------------------------------------------

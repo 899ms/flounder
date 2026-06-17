@@ -118,8 +118,20 @@ export async function runAuditSession(input: {
       // partial / mid-write JSON — skip this checkpoint
     }
   };
+  // Accumulate the model's streaming reasoning/output and log each block when it ends, so
+  // a UI can tail events.jsonl and show the LLM's thinking + output live (block-level, not
+  // token-by-token — readable and cheap). pi surfaces deltas via message_update's
+  // assistantMessageEvent (from @earendil-works/pi-ai: thinking_delta / text_delta / *_end).
+  let thinkingBuf = "";
+  let textBuf = "";
   const unsubscribe = session.subscribe((event) => {
-    if (event.type === "tool_execution_start") {
+    if (event.type === "message_update") {
+      const ame = event.assistantMessageEvent;
+      if (ame.type === "thinking_delta") thinkingBuf += ame.delta;
+      else if (ame.type === "thinking_end") { if (thinkingBuf.trim()) void input.logger.event("audit_thinking", { text: thinkingBuf.trim() }); thinkingBuf = ""; }
+      else if (ame.type === "text_delta") textBuf += ame.delta;
+      else if (ame.type === "text_end") { if (textBuf.trim()) void input.logger.event("audit_text", { text: textBuf.trim() }); textBuf = ""; }
+    } else if (event.type === "tool_execution_start") {
       void input.logger.event("audit_step", { step: stepNo + 1, tool: event.toolName });
     } else if (event.type === "tool_execution_end" && event.isError) {
       void input.logger.event("audit_tool_error", { tool: event.toolName });
