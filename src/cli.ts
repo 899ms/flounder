@@ -56,8 +56,10 @@ async function main(argv: string[]): Promise<void> {
     if (!inputRunDir) throw new Error("fsa confirm needs a prior run directory: fsa confirm <run-dir> --source <paths...>");
     if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required (the target code to reproduce against)");
     // Confirm is UNBOUNDED by default (run until the model finishes); --max-steps caps it only if given.
+    // It auto-RESUMES a prior interrupted confirm of the same run dir (carries settled rows forward); --fresh ignores that.
     const maxSteps = readIntFlag(rest, "--max-steps");
-    const result = await runConfirm(cfg, { inputRunDir, ...(maxSteps !== undefined ? { maxSteps } : {}), streamEvents: true });
+    const fresh = rest.includes("--fresh");
+    const result = await runConfirm(cfg, { inputRunDir, ...(maxSteps !== undefined ? { maxSteps } : {}), ...(fresh ? { fresh: true } : {}), streamEvents: true });
     console.log(`[confirm dir] ${result.runDir}`);
     console.log(`[report] ${result.runDir}/confirm_report.md  ← decision sheet (distinct bugs, reproduced?, novelty, recommendation)`);
     console.log(`[provenance] ${result.runDir}/confirm_provenance.json  ← fingerprints of the findings frozen before any network access`);
@@ -317,7 +319,8 @@ fsa audit selectors (choose one; default digs the existing inventory):
   --scope <id[,id...]>    deep-audit specific scope id(s) from the inventory (run fsa map first)
   --verify <file>         confirm-or-refute given suspected finding(s) by execution. <file> is JSON (one finding or an array; each: title, location, description, exploit_sketch?, fix_patch?). Writes a PoC, builds, runs it through the confirmation gate + differential, marking each confirmed-differential / confirmed-executable / REFUTED. Needs a buildable target.
 
-fsa confirm: unbounded by default (ends when the model finishes); --max-steps caps it.
+fsa confirm: unbounded by default (ends when the model finishes); --max-steps caps it. Auto-resumes an
+interrupted prior confirm of the same run dir (carries already-settled rows forward); --fresh ignores it.
 `);
 }
 
