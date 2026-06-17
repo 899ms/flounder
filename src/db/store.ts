@@ -9,25 +9,15 @@
 // node:sqlite is used so the package stays dependency-free. WAL + a busy timeout let one
 // fsa process write while a UI (or other fsa processes) read concurrently.
 
-import { DatabaseSync } from "node:sqlite";
+import "./sqlite-quiet.js"; // must run before node:sqlite loads — filters its experimental warning
+import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-// node:sqlite emits a one-time ExperimentalWarning to stderr. Filter only that warning so
-// the CLI stays clean; everything else passes through. Installed once, process-wide.
-let warningFilterInstalled = false;
-function silenceSqliteExperimentalWarning(): void {
-  if (warningFilterInstalled) return;
-  warningFilterInstalled = true;
-  const original = process.emitWarning.bind(process);
-  process.emitWarning = ((warning: string | Error, ...rest: unknown[]): void => {
-    const name = warning instanceof Error ? warning.name : (rest[0] as { type?: string } | string | undefined);
-    const type = typeof name === "object" && name ? name.type : name;
-    const text = warning instanceof Error ? warning.message : warning;
-    if (type === "ExperimentalWarning" && typeof text === "string" && text.includes("SQLite")) return;
-    (original as (...args: unknown[]) => void)(warning, ...rest);
-  }) as typeof process.emitWarning;
-}
+// A static `import ... from "node:sqlite"` emits the builtin's ExperimentalWarning at link
+// time, before sqlite-quiet's body can install the filter. Loading it via require() during
+// module evaluation (after the static sqlite-quiet import has run) lets the filter catch it.
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
 export type RunKind = "run" | "map" | "audit" | "verify" | "confirm";
 export type RunStatus = "running" | "done" | "error" | "killed";
@@ -36,9 +26,9 @@ export type FindingStatus = "suspected" | "confirmed-executable" | "confirmed-di
 
 export interface ProjectInput {
   name: string;
-  sourcePaths?: string[];
-  buildRoot?: string;
-  corpusPaths?: string[];
+  sourcePaths?: string[] | undefined;
+  buildRoot?: string | undefined;
+  corpusPaths?: string[] | undefined;
   config?: unknown; // model/provider/thinking/budgets/max_scopes snapshot the UI can edit
 }
 
@@ -46,37 +36,37 @@ export interface RunInput {
   projectId: number;
   kind: RunKind;
   runDir: string;
-  provider?: string;
-  model?: string;
-  thinking?: string;
+  provider?: string | undefined;
+  model?: string | undefined;
+  thinking?: string | undefined;
   budgets?: unknown;
-  pid?: number;
+  pid?: number | undefined;
 }
 
 export interface ScopeRow {
   scopeId: string;
-  title?: string;
-  location?: string;
-  score?: number;
+  title?: string | undefined;
+  location?: string | undefined;
+  score?: number | undefined;
   status: ScopeStatus;
 }
 
 export interface FindingRow {
   findingKey: string;
-  title?: string;
-  location?: string;
-  severity?: string;
+  title?: string | undefined;
+  location?: string | undefined;
+  severity?: string | undefined;
   status: FindingStatus;
-  reportPath?: string;
-  scopeId?: string;
+  reportPath?: string | undefined;
+  scopeId?: string | undefined;
 }
 
 export interface ConfirmRow {
   bug: string;
-  reproduced?: string;
-  recommendation?: string;
-  members?: string[];
-  decisionPath?: string;
+  reproduced?: string | undefined;
+  recommendation?: string | undefined;
+  members?: string[] | undefined;
+  decisionPath?: string | undefined;
 }
 
 export interface Coverage {
@@ -181,10 +171,9 @@ function now(): string {
 }
 
 export class MetadataStore {
-  private readonly db: DatabaseSync;
+  private readonly db: InstanceType<typeof DatabaseSync>;
 
   constructor(dbPath: string) {
-    silenceSqliteExperimentalWarning();
     if (dbPath !== ":memory:") mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
     this.db = new DatabaseSync(dbPath);
     // WAL + busy timeout: one writer at a time, concurrent readers, retries instead of

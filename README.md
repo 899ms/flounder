@@ -246,6 +246,18 @@ Each `fsa confirm` writes:
 
 Run artifacts are private by default. Redact before sharing outside the trusted project context.
 
+### Tracking store
+
+Every run also records its metadata to a SQLite store at `<out>/fsa.db` (via `node:sqlite`, no extra dependency): the project, the run lifecycle, scope coverage (mapped vs audited, updated live), findings and their status transitions (suspect → confirm → refute, on a timeline), and confirm decisions. It holds metadata and **paths** to the on-disk artifacts above, not their content. Inspect it across all projects without reading run dirs:
+
+```bash
+fsa db projects                 # every project: scope coverage, finding counts, latest run
+fsa db runs <target>            # run history for a project
+fsa db findings <target>        # findings with their status timeline
+```
+
+This is the backend a UI reads from; it is written live by each run (not rebuilt from files).
+
 ## Library API
 
 ```ts
