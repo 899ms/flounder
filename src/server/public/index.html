@@ -66,6 +66,24 @@
   .list-head .list-title { font-weight: 600; font-size: 14px; color: var(--fg); }
   .list-head .counter { color: var(--fg-muted); border-color: var(--border); }
   .list-head .btn { margin-left: auto; }
+  /* settings dialog: left nav + content pane, room for more global config sections */
+  dialog.wide { width: min(840px, 94vw); }
+  .settings { display: grid; grid-template-columns: 168px 1fr; min-height: 400px; }
+  .settings-nav { border-right: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 2px; background: var(--canvas-subtle); }
+  .settings-nav button { text-align: left; background: transparent; border: 0; color: var(--fg); padding: 8px 10px; border-radius: 6px; cursor: pointer; font: inherit; display: flex; align-items: center; gap: 8px; }
+  .settings-nav button:hover { background: var(--canvas); }
+  .settings-nav button.sel { background: var(--sel-bg); color: var(--accent); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+  .settings-pane { padding: 16px 18px; overflow-y: auto; max-height: 72vh; }
+  .settings-pane[hidden] { display: none; }
+  .pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .pane-head .btn { margin-left: auto; }
+  .prov-row, .daemon-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+  .prov-row .grow, .daemon-row .grow { flex: 1; min-width: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--fg-muted); flex: none; }
+  .dot.on { background: #3fb950; }
+  .roles-grid { display: grid; grid-template-columns: 64px 1fr 1fr; gap: 6px 8px; align-items: center; margin-top: 8px; }
+  .roles-grid label { font-size: 12px; color: var(--fg-muted); }
+  .manage-link { background: transparent; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
 
   .box { border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); overflow: hidden; }
   .box-header { background: var(--canvas-subtle); padding: 10px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
@@ -166,6 +184,7 @@
   <span class="sub">audit tracker</span>
   <span class="spacer"></span>
   <span id="livePill" class="counter">connecting…</span>
+  <button class="icon-btn" id="settingsBtn" title="Settings"></button>
   <button class="icon-btn" id="themeBtn" title="Toggle theme"></button>
 </header>
 <main>
@@ -185,13 +204,16 @@
   <div class="dlg-head">Create project</div>
   <div class="body">
     <label>Project name</label><input name="name" required placeholder="my-protocol" />
-    <label>Source paths (space-separated)</label><input name="sourcePaths" placeholder="./contracts ./src" required />
-    <div class="grid2"><div><label>Build root</label><input name="buildRoot" placeholder="." /></div><div><label>Corpus paths</label><input name="corpusPaths" placeholder="./docs/specs" /></div></div>
-    <div class="grid2"><div><label>Provider</label><input name="provider" placeholder="openai-codex" /></div><div><label>Model</label><input name="model" placeholder="(default)" /></div></div>
-    <div class="grid2"><div><label>Thinking</label><select name="thinking"><option value="">(default)</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option value="xhigh">xhigh</option></select></div><div><label>Max scopes</label><input name="maxScopes" type="number" min="1" placeholder="10" /></div></div>
+    <label>Provider</label><div style="display:flex;gap:8px;align-items:center"><select name="providerId" id="projProvider" style="flex:1"></select><button type="button" class="manage-link" id="projManageProv">Manage…</button></div>
+    <label>Project directory <span class="muted">(under the daemon workspace)</span></label><input name="dir" placeholder="(defaults to the project name)" />
+    <details style="margin:2px 0 4px"><summary class="muted" style="cursor:pointer">Materials — relative paths (defaults are usually fine)</summary>
+      <label>Source paths (space-separated, relative to the project dir)</label><input name="sourcePaths" placeholder="." />
+      <div class="grid2"><div><label>Build root</label><input name="buildRoot" placeholder="." /></div><div><label>Corpus paths</label><input name="corpusPaths" placeholder="docs/specs" /></div></div>
+    </details>
+    <div class="grid2"><div><label>Max scopes</label><input name="maxScopes" type="number" min="1" placeholder="10" /></div><div><label>Dig samples</label><input name="digSamples" type="number" min="1" placeholder="1" /></div></div>
     <div class="grid2"><div><label>Map steps</label><input name="mapSteps" type="number" min="1" placeholder="(unbounded)" /></div><div><label>Dig steps</label><input name="digSteps" type="number" min="1" placeholder="(unbounded)" /></div></div>
-    <div class="grid2"><div><label>Dig samples</label><input name="digSamples" type="number" min="1" placeholder="1" /></div><div><label>Dig concurrency</label><input name="digConcurrency" type="number" min="1" placeholder="1" /></div></div>
-    <div class="hint">Creates the project with its materials &amp; config — no run starts yet. Open it and click “Start audit”.</div>
+    <div class="grid2"><div><label>Dig concurrency</label><input name="digConcurrency" type="number" min="1" placeholder="1" /></div><div></div></div>
+    <div class="hint">Code lives at <code>workspace/&lt;dir&gt;</code> on the daemon; paths are relative to it. No run starts yet — open the project and click “Start audit”.</div>
   </div>
   <div class="dlg-foot"><button type="button" class="btn" id="projCancelBtn">Cancel</button><button class="btn primary" id="projCreateBtn" value="create">Create project</button></div>
 </form></dialog>
@@ -211,20 +233,60 @@
 <dialog id="cfgDialog"><form method="dialog" id="cfgForm">
   <div class="dlg-head">Edit project config</div>
   <div class="body">
-    <label>Source paths (space-separated)</label><input name="sourcePaths" />
-    <div class="grid2"><div><label>Build root</label><input name="buildRoot" /></div><div><label>Corpus paths</label><input name="corpusPaths" /></div></div>
-    <div class="grid2"><div><label>Provider</label><input name="provider" /></div><div><label>Model</label><input name="model" /></div></div>
-    <div class="grid2"><div><label>Thinking</label><select name="thinking"><option value="">(default)</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option value="xhigh">xhigh</option></select></div><div><label>Max scopes</label><input name="maxScopes" type="number" min="1" /></div></div>
+    <label>Provider</label><div style="display:flex;gap:8px;align-items:center"><select name="providerId" id="cfgProvider" style="flex:1"></select><button type="button" class="manage-link" id="cfgManageProv">Manage…</button></div>
+    <label>Project directory</label><input name="dir" placeholder="(defaults to the project name)" />
+    <details style="margin:2px 0 4px"><summary class="muted" style="cursor:pointer">Materials — relative paths</summary>
+      <label>Source paths (space-separated, relative to the project dir)</label><input name="sourcePaths" />
+      <div class="grid2"><div><label>Build root</label><input name="buildRoot" /></div><div><label>Corpus paths</label><input name="corpusPaths" /></div></div>
+    </details>
+    <div class="grid2"><div><label>Max scopes</label><input name="maxScopes" type="number" min="1" /></div><div><label>Dig samples</label><input name="digSamples" type="number" min="1" /></div></div>
     <div class="grid2"><div><label>Map steps</label><input name="mapSteps" type="number" min="1" placeholder="(unbounded)" /></div><div><label>Dig steps</label><input name="digSteps" type="number" min="1" placeholder="(unbounded)" /></div></div>
-    <div class="grid2"><div><label>Dig samples</label><input name="digSamples" type="number" min="1" /></div><div><label>Dig concurrency</label><input name="digConcurrency" type="number" min="1" /></div></div>
-    <div class="hint">Saved to the project. The next Start / Continue / Restart / Run uses it. Leave a budget blank for unbounded.</div>
+    <div class="grid2"><div><label>Dig concurrency</label><input name="digConcurrency" type="number" min="1" /></div><div></div></div>
+    <div class="hint">Saved to the project. Provider / model / thinking come from the selected profile (Manage… to edit profiles). Leave a budget blank for unbounded.</div>
   </div>
   <div class="dlg-foot"><button type="button" class="btn" id="cfgCancelBtn">Cancel</button><button class="btn primary" id="cfgSaveBtn" value="save">Save config</button></div>
 </form></dialog>
 
+<dialog id="settingsDialog" class="wide"><div>
+  <div class="dlg-head">Settings</div>
+  <div class="settings">
+    <div class="settings-nav">
+      <button type="button" data-pane="providers" class="sel">Providers</button>
+      <button type="button" data-pane="daemons">Daemons</button>
+    </div>
+    <div>
+      <div class="settings-pane" id="pane-providers">
+        <div class="pane-head"><strong>Provider profiles</strong><span id="provCount" class="counter"></span><button type="button" class="btn primary sm" id="provNewBtn">New provider</button></div>
+        <div class="hint" style="margin-bottom:10px">A reusable model strategy — provider + model + thinking, with optional per-phase map/dig/refute overrides. API keys stay on the daemon (pi /login); profiles hold no secrets.</div>
+        <div id="provList"></div>
+        <form id="provEditor" hidden style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+          <input type="hidden" name="id" />
+          <label>Name</label><input name="name" required placeholder="codex · xhigh" />
+          <div class="grid2"><div><label>Provider</label><select name="provider" id="provProvider"></select></div><div><label>Model</label><select name="model" id="provModel"></select></div></div>
+          <label>Thinking</label><select name="thinking" id="provThinking"></select>
+          <label style="margin-top:10px">Per-phase overrides <span class="muted">(blank = inherit the defaults above)</span></label>
+          <div class="roles-grid">
+            <label></label><label>model</label><label>thinking</label>
+            <label>map</label><select name="map_model" data-rolemodel></select><select name="map_thinking" data-rolethinking></select>
+            <label>dig</label><select name="dig_model" data-rolemodel></select><select name="dig_thinking" data-rolethinking></select>
+            <label>refute</label><select name="refute_model" data-rolemodel></select><select name="refute_thinking" data-rolethinking></select>
+          </div>
+          <div class="dlg-foot" style="margin-top:14px"><button type="button" class="btn danger" id="provDeleteBtn" style="margin-right:auto">Delete</button><button type="button" class="btn" id="provCancelBtn">Cancel</button><button type="submit" class="btn primary">Save provider</button></div>
+        </form>
+      </div>
+      <div class="settings-pane" id="pane-daemons" hidden>
+        <div class="pane-head"><strong>Daemons</strong><span id="daemonCount" class="counter"></span></div>
+        <div class="hint" style="margin-bottom:10px">Execution-plane clients. Each claims jobs and resolves project dirs under its own workspace. Mint a token with <code>flounder db mint-token</code>, then run <code>flounder daemon --server … --token …</code>.</div>
+        <div id="daemonList"></div>
+      </div>
+    </div>
+  </div>
+  <div class="dlg-foot"><button type="button" class="btn" id="settingsCloseBtn">Close</button></div>
+</div></dialog>
+
 <script>
 const $ = (sel) => document.querySelector(sel);
-let state = { projects: [], active: [], filter: "", selected: null, detail: null, f: { status: "", q: "", limit: 50, offset: 0, rows: [], total: 0 } };
+let state = { projects: [], active: [], providers: [], filter: "", selected: null, detail: null, f: { status: "", q: "", limit: 50, offset: 0, rows: [], total: 0 } };
 
 // Live activity feed: streams a run's events.jsonl (model thinking/output + tool calls) over
 // SSE. Kept in a PERSISTENT detached node so the detail re-rendering each tick doesn't wipe
@@ -405,7 +467,7 @@ function renderDetail() {
     : "";
   el.innerHTML =
     '<div class="d-head"><h2>' + esc(d.project.name) + '</h2>' + stateBadge(st) + '</div>'
-    + '<div class="muted mono" style="margin-top:6px">' + esc(cfg.provider || "") + (cfg.model ? " · " + esc(cfg.model) : "") + (cfg.thinking ? " · " + esc(cfg.thinking) : "")
+    + '<div class="muted mono" style="margin-top:6px">' + esc(providerName(d.project.provider_id) || "(no provider)") + " · dir " + esc(d.project.dir || d.project.name)
       + " · max-scopes " + (cfg.maxScopes ?? "-") + " · map/dig steps " + (cfg.mapSteps ?? "∞") + "/" + (cfg.digSteps ?? "∞") + '</div>'
     + '<div class="progress" style="margin-top:16px;height:10px"><span class="audited" style="width:' + pct(pr.audited, pr.total) + '%"></span><span class="pending" style="width:' + pct(pr.pending, pr.total) + '%"></span><span class="deferred" style="width:' + pct(pr.deferred || 0, pr.total) + '%"></span></div>'
     + '<div class="stats">'
@@ -509,12 +571,14 @@ async function command(which) {
 
 // --- edit config dialog ---
 const cfgDialog = $("#cfgDialog");
-function openEdit() {
+async function openEdit() {
   const d = state.detail; if (!d) return;
   const f = projectFields(d);
+  await loadProviders();
+  fillProviderSelect($("#cfgProvider"), d.project.provider_id);
   const set = (k, v) => { $("#cfgForm [name=" + k + "]").value = v ?? ""; };
+  set("dir", d.project.dir || "");
   set("sourcePaths", f.sourcePaths.join(" ")); set("buildRoot", f.buildRoot); set("corpusPaths", f.corpusPaths.join(" "));
-  set("provider", f.cfg.provider); set("model", f.cfg.model); set("thinking", f.cfg.thinking || "");
   set("maxScopes", f.cfg.maxScopes); set("mapSteps", f.cfg.mapSteps); set("digSteps", f.cfg.digSteps);
   set("digSamples", f.cfg.digSamples); set("digConcurrency", f.cfg.digConcurrency);
   cfgDialog.showModal();
@@ -525,16 +589,16 @@ $("#cfgForm").onsubmit = async (e) => {
   const f = new FormData($("#cfgForm"));
   const num = (k) => { const v = f.get(k); return v ? Number(v) : undefined; };
   const list = (k) => { const v = (f.get(k) || "").trim(); return v ? v.split(/\s+/) : []; };
-  const body = { sourcePaths: list("sourcePaths"), buildRoot: f.get("buildRoot") || undefined, corpusPaths: list("corpusPaths"),
-    config: { provider: f.get("provider") || undefined, model: f.get("model") || undefined, thinking: f.get("thinking") || undefined,
-      maxScopes: num("maxScopes"), mapSteps: num("mapSteps"), digSteps: num("digSteps"), digSamples: num("digSamples"), digConcurrency: num("digConcurrency") } };
+  const body = { providerId: f.get("providerId") ? Number(f.get("providerId")) : undefined, dir: f.get("dir") || undefined,
+    sourcePaths: list("sourcePaths"), buildRoot: f.get("buildRoot") || undefined, corpusPaths: list("corpusPaths"),
+    config: { maxScopes: num("maxScopes"), mapSteps: num("mapSteps"), digSteps: num("digSteps"), digSamples: num("digSamples"), digConcurrency: num("digConcurrency") } };
   await fetch("/api/projects/" + encodeURIComponent(state.selected), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   setTimeout(loadDetail, 200);
 };
 
 // --- create project dialog ---
 const projDialog = $("#projDialog");
-$("#newProjectBtn").onclick = () => { $("#projForm").reset(); projDialog.showModal(); };
+$("#newProjectBtn").onclick = async () => { $("#projForm").reset(); await loadProviders(); fillProviderSelect($("#projProvider"), ""); projDialog.showModal(); };
 $("#projCancelBtn").onclick = () => projDialog.close();
 $("#projForm").onsubmit = async (e) => {
   if (e.submitter && e.submitter.id !== "projCreateBtn") return;
@@ -542,9 +606,9 @@ $("#projForm").onsubmit = async (e) => {
   const num = (k) => { const v = f.get(k); return v ? Number(v) : undefined; };
   const list = (k) => { const v = (f.get(k) || "").trim(); return v ? v.split(/\s+/) : []; };
   const name = (f.get("name") || "").trim();
-  const body = { name, sourcePaths: list("sourcePaths"), buildRoot: f.get("buildRoot") || undefined, corpusPaths: list("corpusPaths"),
-    config: { provider: f.get("provider") || undefined, model: f.get("model") || undefined, thinking: f.get("thinking") || undefined,
-      maxScopes: num("maxScopes"), mapSteps: num("mapSteps"), digSteps: num("digSteps"), digSamples: num("digSamples"), digConcurrency: num("digConcurrency") } };
+  const body = { name, providerId: f.get("providerId") ? Number(f.get("providerId")) : undefined, dir: f.get("dir") || undefined,
+    sourcePaths: list("sourcePaths"), buildRoot: f.get("buildRoot") || undefined, corpusPaths: list("corpusPaths"),
+    config: { maxScopes: num("maxScopes"), mapSteps: num("mapSteps"), digSteps: num("digSteps"), digSamples: num("digSamples"), digConcurrency: num("digConcurrency") } };
   const res = await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) { const err = await res.json().catch(() => ({})); alert(err.error || "could not create project"); return; }
   setTimeout(() => selectProject(name), 200);
@@ -569,6 +633,122 @@ $("#runForm").onsubmit = async (e) => {
   await launchRun(body);
 };
 
+// --- settings: providers + daemons (room for more global config sections) ---
+const settingsDialog = $("#settingsDialog");
+$("#settingsBtn").innerHTML = icon("gear");
+$("#settingsBtn").onclick = () => openSettings("providers");
+$("#settingsCloseBtn").onclick = () => settingsDialog.close();
+document.querySelectorAll(".settings-nav button").forEach((b) => (b.onclick = () => showPane(b.dataset.pane)));
+function showPane(name) {
+  document.querySelectorAll(".settings-nav button").forEach((b) => b.classList.toggle("sel", b.dataset.pane === name));
+  $("#pane-providers").hidden = name !== "providers";
+  $("#pane-daemons").hidden = name !== "daemons";
+}
+async function openSettings(pane) {
+  showPane(pane || "providers");
+  hideProvEditor();
+  await loadProviders();
+  renderProviders();
+  await renderDaemons();
+  if (!settingsDialog.open) settingsDialog.showModal();
+}
+
+// providers cache + shared <select> filler (used by the project + config dialogs)
+async function loadProviders() {
+  try { state.providers = (await (await fetch("/api/providers")).json()).providers || []; } catch { state.providers = []; }
+}
+function fillProviderSelect(sel, selectedId) {
+  sel.innerHTML = ['<option value="">(select a provider)</option>']
+    .concat(state.providers.map((p) => '<option value="' + p.id + '"' + (Number(selectedId) === p.id ? " selected" : "") + '>' + esc(p.name) + "</option>"))
+    .join("");
+}
+function providerName(id) { const p = state.providers.find((x) => x.id === Number(id)); return p ? p.name : ""; }
+
+// ---- providers pane ----
+function renderProviders() {
+  $("#provCount").textContent = state.providers.length;
+  const rows = state.providers.map((p) => {
+    const roles = Object.keys(p.roles || {});
+    const sub = esc(p.provider) + (p.model ? " · " + esc(p.model) : "") + (p.thinking ? " · " + esc(p.thinking) : "") + (roles.length ? "  ·  per-phase: " + roles.join("/") : "");
+    return '<div class="prov-row"><div class="grow"><div style="font-weight:600">' + esc(p.name) + '</div><div class="muted mono" style="font-size:12px;margin-top:2px">' + sub + "</div></div>"
+      + '<button class="btn sm" data-edit="' + p.id + '">Edit</button></div>';
+  }).join("");
+  $("#provList").innerHTML = rows || '<div class="empty">No providers yet.</div>';
+  $("#provList").querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => showProvEditor(state.providers.find((p) => p.id === Number(b.dataset.edit)))));
+}
+const provEditor = $("#provEditor");
+const pe = (n) => provEditor.querySelector("[name=" + n + "]");
+const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
+const PHASES = ["map", "dig", "refute"];
+function fillThinking(sel, inherit, val) {
+  sel.innerHTML = [inherit ? '<option value="">(inherit)</option>' : '<option value="">(provider default)</option>']
+    .concat(THINKING_LEVELS.map((t) => "<option" + (t === val ? " selected" : "") + ">" + t + "</option>")).join("");
+}
+let piProviders = null;
+async function piProviderList() { if (!piProviders) { try { piProviders = (await (await fetch("/api/pi/providers")).json()).providers || []; } catch { piProviders = []; } } return piProviders; }
+// fill the main + per-phase model selects from the chosen provider's models (preserving values)
+async function fillModelSelects(provider) {
+  let models = [];
+  try { models = (await (await fetch("/api/pi/models/" + encodeURIComponent(provider))).json()).models || []; } catch { models = []; }
+  const opt = (sel, empty) => { const keep = sel.value; sel.innerHTML = [empty].concat(models.map((m) => "<option" + (m.id === keep ? " selected" : "") + ">" + esc(m.id) + "</option>")).join(""); };
+  opt($("#provModel"), '<option value="">(provider default)</option>');
+  provEditor.querySelectorAll("[data-rolemodel]").forEach((sel) => opt(sel, '<option value="">(inherit)</option>'));
+}
+function hideProvEditor() { provEditor.hidden = true; }
+async function showProvEditor(p) {
+  provEditor.hidden = false;
+  pe("id").value = p ? p.id : "";
+  pe("name").value = p ? p.name : "";
+  $("#provDeleteBtn").style.display = p ? "" : "none";
+  fillThinking($("#provThinking"), false, p ? p.thinking || "" : "");
+  provEditor.querySelectorAll("[data-rolethinking]").forEach((sel, i) => fillThinking(sel, true, p ? ((p.roles || {})[PHASES[i]] || {}).thinking || "" : ""));
+  const list = await piProviderList();
+  const chosen = p ? p.provider : "openai-codex";
+  $("#provProvider").innerHTML = list.map((x) => "<option" + (x === chosen ? " selected" : "") + ">" + esc(x) + "</option>").join("");
+  // seed model values BEFORE populating so fillModelSelects preserves them
+  $("#provModel").innerHTML = p && p.model ? "<option selected>" + esc(p.model) + "</option>" : "";
+  provEditor.querySelectorAll("[data-rolemodel]").forEach((sel, i) => { const m = p ? ((p.roles || {})[PHASES[i]] || {}).model : ""; sel.innerHTML = m ? "<option selected>" + esc(m) + "</option>" : ""; });
+  await fillModelSelects(chosen);
+}
+$("#provProvider").onchange = () => fillModelSelects($("#provProvider").value);
+$("#provNewBtn").onclick = () => showProvEditor(null);
+$("#provCancelBtn").onclick = hideProvEditor;
+$("#provDeleteBtn").onclick = async () => {
+  const id = pe("id").value; if (!id) return;
+  await fetch("/api/providers/" + id, { method: "DELETE" });
+  await loadProviders(); renderProviders(); hideProvEditor();
+};
+provEditor.onsubmit = async (e) => {
+  e.preventDefault();
+  const roleOf = (r) => { const m = pe(r + "_model").value || undefined; const t = pe(r + "_thinking").value || undefined; return m || t ? { ...(m ? { model: m } : {}), ...(t ? { thinking: t } : {}) } : undefined; };
+  const roles = {}; PHASES.forEach((r) => { const v = roleOf(r); if (v) roles[r] = v; });
+  const body = { name: pe("name").value.trim(), provider: pe("provider").value, model: pe("model").value || undefined, thinking: pe("thinking").value || undefined, roles };
+  const id = pe("id").value;
+  const res = await fetch(id ? "/api/providers/" + id : "/api/providers", { method: id ? "PATCH" : "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); alert(err.error || "could not save provider"); return; }
+  await loadProviders(); renderProviders(); hideProvEditor();
+};
+
+// ---- daemons pane ----
+function relTime(t) { const s = Math.round((Date.now() - t) / 1000); if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + "m ago"; return Math.round(s / 3600) + "h ago"; }
+async function renderDaemons() {
+  let daemons = [];
+  try { daemons = (await (await fetch("/api/active")).json()).daemons || []; } catch {}
+  $("#daemonCount").textContent = daemons.length;
+  const rows = daemons.map((d) => {
+    const seen = d.last_seen_at ? new Date(d.last_seen_at).getTime() : 0;
+    const online = seen && Date.now() - seen < 60000;
+    return '<div class="daemon-row"><span class="dot ' + (online ? "on" : "") + '"></span><div class="grow"><div style="font-weight:600">' + esc(d.name || "daemon") + "</div>"
+      + '<div class="muted mono" style="font-size:12px;margin-top:2px">' + (d.workspace ? "ws " + esc(d.workspace) : "(no workspace reported)") + "</div></div>"
+      + '<span class="muted" style="font-size:12px">' + (online ? "online" : d.last_seen_at ? "last seen " + relTime(seen) : "never") + "</span></div>";
+  }).join("");
+  $("#daemonList").innerHTML = rows || '<div class="empty">No daemons connected. Start one with <code>flounder daemon</code> (or <code>flounder ui</code> spawns a local one).</div>';
+}
+
+// "Manage…" links from the project + config dialogs jump to the Providers settings
+$("#projManageProv").onclick = () => { projDialog.close(); openSettings("providers"); };
+$("#cfgManageProv").onclick = () => { cfgDialog.close(); openSettings("providers"); };
+
 // --- live stream ---
 function connect() {
   const es = new EventSource("/api/stream");
@@ -585,6 +765,7 @@ function connect() {
   };
   es.onerror = () => { $("#livePill").textContent = "reconnecting…"; $("#livePill").className = "counter"; };
 }
+loadProviders(); // so the detail header can show the selected provider's name
 connect();
 </script>
 </body>

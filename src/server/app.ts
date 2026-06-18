@@ -586,6 +586,7 @@ function daemonStream(c: Ctx): void {
   const keepalive = setInterval(() => {
     try {
       c.res.write(`: keepalive\n\n`);
+      c.store.touchDaemon(Number(daemon.id)); // refresh last_seen while the stream is connected → accurate "online"
     } catch {
       /* closed */
     }
