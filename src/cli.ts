@@ -276,10 +276,15 @@ function spawnLocalDaemon(opts: { out: string; url: string; workspace?: string; 
     }
   };
   process.on("exit", kill);
-  process.on("SIGINT", () => {
-    kill();
-    process.exit(0);
-  });
+  // Tie the child to our lifecycle for every way we're asked to stop: SIGINT (Ctrl-C), SIGTERM
+  // (`pkill`, process managers, `kill`), and SIGHUP (terminal closed). A bare signal terminates
+  // Node WITHOUT running the "exit" handler, so without these the daemon would be orphaned.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      kill();
+      process.exit(0);
+    });
+  }
 }
 
 /** Resolve --out: flag > persisted config `out` > "runs". Keeps the tracking-store location
