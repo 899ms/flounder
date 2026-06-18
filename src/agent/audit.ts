@@ -14,7 +14,7 @@ import { runRefutation } from "./refutation.js";
 import { runAuditLoop } from "./loop.js";
 import { ProjectMemory } from "./memory.js";
 import { loadScopeInventory, saveScopeInventory, scopeProgress } from "./scope-store.js";
-import { RunRecorder } from "../db/record.js";
+import { RunRecorder, type RunTrackerFactory } from "../db/record.js";
 import type { RunKind } from "../db/store.js";
 import { isPiSessionProvider, runAuditSession, SessionLlmClient } from "./pi-session.js";
 import type { TranscriptStep } from "./prompts.js";
@@ -35,7 +35,7 @@ export interface AuditRunResult {
 
 export async function runAudit(
   cfg: AuditorConfig,
-  options: { llm?: LlmClient; streamEvents?: boolean; kind?: RunKind; signal?: AbortSignal; onRun?: (runId: number) => void; onActivity?: (event: { kind: string; delta?: string; tool?: string; step?: number }) => void } = {},
+  options: { llm?: LlmClient; streamEvents?: boolean; kind?: RunKind; signal?: AbortSignal; onRun?: (runId: number) => void; onActivity?: (event: { kind: string; delta?: string; tool?: string; step?: number }) => void; makeTracker?: RunTrackerFactory } = {},
 ): Promise<AuditRunResult> {
   const startedAt = new Date();
   const logger = new RunLogger(cfg.outputDir, cfg.targetName, startedAt, { streamEvents: options.streamEvents ?? false });
@@ -155,7 +155,7 @@ export async function runAudit(
   let scopeInventory: AuditScope[] = [];
   // SQLite tracking: record the project + a running run, then update scope coverage,
   // findings, and final status as the run progresses. Failure-isolated (never throws).
-  const recorder = RunRecorder.start(cfg, logger.runDir, options.kind ?? "run", logger);
+  const recorder = (options.makeTracker ?? RunRecorder.start)(cfg, logger.runDir, options.kind ?? "run", logger);
   if (recorder.runDbId !== undefined) options.onRun?.(recorder.runDbId); // let an in-process caller learn the DB run id
   // Set when concurrent digs already ran differential confirmation in their own
   // isolated workspaces, so the shared post-loop differential stage skips them.

@@ -10,11 +10,31 @@ import type { AuditorConfig } from "../config.js";
 import type { AgentFinding, AuditScope } from "../agent/tools.js";
 import { MetadataStore, type Coverage, type FindingRow, type FindingStatus, type RunKind, type RunStatus, type ScopeRow } from "./store.js";
 
-interface RunLoggerLike {
+export interface RunLoggerLike {
   event(kind: string, data?: Record<string, unknown>): Promise<void>;
 }
 
-export class RunRecorder {
+export interface ConfirmDecisionInput {
+  bug: string;
+  reproduced?: string | undefined;
+  recommendation?: string | undefined;
+  members?: string[] | undefined;
+}
+
+// What runAudit/runConfirm need to report a run's progress. The default impl (RunRecorder)
+// writes the local SQLite store; a daemon can supply a remote impl that POSTs to a server
+// (so execution can live on a different machine from the control plane / DB).
+export interface RunTracker {
+  readonly runDbId: number | undefined;
+  scopes(scopes: AuditScope[]): void;
+  findings(findings: AgentFinding[], runDir: string, reason?: string): void;
+  confirmDecisions(rows: ConfirmDecisionInput[], decisionPath?: string): void;
+  finish(status: RunStatus, coverage?: Coverage, findingsTotal?: number): void;
+}
+
+export type RunTrackerFactory = (cfg: AuditorConfig, runDir: string, kind: RunKind, logger?: RunLoggerLike) => RunTracker;
+
+export class RunRecorder implements RunTracker {
   private store: MetadataStore | undefined;
   private projectId: number | undefined;
   private runId: number | undefined;
