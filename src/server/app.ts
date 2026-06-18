@@ -249,6 +249,31 @@ const ROUTES: Route[] = [
   }),
 
   route({
+    method: "GET", path: "/api/daemons",
+    summary: "Registered execution-plane daemons (id, name, workspace, last_seen_at) — no tokens.",
+    handler: (c) => sendJson(c.res, 200, { daemons: c.store.listDaemons() }),
+  }),
+  route({
+    method: "POST", path: "/api/daemons",
+    summary: "Register a daemon and mint its bearer token (shown ONCE). Configure it on the daemon: flounder daemon --server <url> --token <token>.",
+    body: { name: "string (required) — a label for this executor" },
+    handler: daemonCreate,
+  }),
+  route({
+    method: "PATCH", path: "/api/daemons/:id",
+    summary: "Rename a daemon (the token is unchanged).",
+    params: { id: "daemon id" },
+    body: { name: "string (required)" },
+    handler: daemonRename,
+  }),
+  route({
+    method: "DELETE", path: "/api/daemons/:id",
+    summary: "Revoke a daemon registration (its token stops working; past jobs keep their history).",
+    params: { id: "daemon id" },
+    handler: (c) => { const ok = c.store.deleteDaemon(Number(c.params.id)); ok ? sendJson(c.res, 200, { ok: true, deleted: Number(c.params.id) }) : sendJson(c.res, 404, { error: "no such daemon" }); },
+  }),
+
+  route({
     method: "POST", path: "/api/launch",
     summary: "Queue an ad-hoc run from a full launch spec (absolute materials, no project staging) — the entry point the CLI drives. Upserts a project row keyed by `target` so the run is grouped + visible, enqueues the job, and nudges daemons. Use POST /api/projects/:name/runs instead to launch a UI-configured project.",
     body: {
@@ -622,6 +647,22 @@ async function providerUpdate(c: Ctx): Promise<void> {
   }
   c.store.updateProvider(id, input);
   sendJson(c.res, 200, { ok: true });
+}
+
+async function daemonCreate(c: Ctx): Promise<void> {
+  const body = (await readBody(c.req)) as Record<string, unknown>;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) return sendJson(c.res, 400, { error: "name is required" });
+  const { id, token } = c.store.createDaemonToken(name); // token is returned ONCE — the UI must surface it now
+  sendJson(c.res, 200, { ok: true, id, name, token });
+}
+
+async function daemonRename(c: Ctx): Promise<void> {
+  const body = (await readBody(c.req)) as Record<string, unknown>;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) return sendJson(c.res, 400, { error: "name is required" });
+  const ok = c.store.renameDaemon(Number(c.params.id), name);
+  ok ? sendJson(c.res, 200, { ok: true }) : sendJson(c.res, 404, { error: "no such daemon" });
 }
 
 // Serve a run's report artifact (text) from its run dir. Allowlisted filenames only (no slashes,

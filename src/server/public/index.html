@@ -328,8 +328,9 @@
         </form>
       </div>
       <div class="settings-pane" id="pane-daemons" hidden>
-        <div class="pane-head"><strong>Daemons</strong><span id="daemonCount" class="counter"></span></div>
-        <div class="hint" style="margin-bottom:10px">Execution-plane clients. Each claims jobs and resolves project dirs under its own workspace. Mint a token with <code>flounder db mint-token</code>, then run <code>flounder daemon --server … --token …</code>.</div>
+        <div class="pane-head"><strong>Daemons</strong><span id="daemonCount" class="counter"></span><button type="button" class="btn primary sm" id="daemonNewBtn">New daemon</button></div>
+        <div class="hint" style="margin-bottom:10px">Execution-plane clients. Each claims jobs and resolves project dirs under its own workspace. <strong>New daemon</strong> mints a bearer token (shown once); then run <code>flounder daemon --server … --token …</code> on the executor.</div>
+        <div id="daemonToken" hidden style="margin-bottom:12px;border:1px solid var(--success-fg);background:rgba(63,185,80,.08);border-radius:8px;padding:12px 14px"></div>
         <div id="daemonList"></div>
       </div>
     </div>
@@ -984,17 +985,49 @@ provEditor.onsubmit = async (e) => {
 function relTime(t) { const s = Math.round((Date.now() - t) / 1000); if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + "m ago"; return Math.round(s / 3600) + "h ago"; }
 async function renderDaemons() {
   let daemons = [];
-  try { daemons = (await (await fetch("/api/active")).json()).daemons || []; } catch {}
+  try { daemons = (await (await fetch("/api/daemons")).json()).daemons || []; } catch {}
   $("#daemonCount").textContent = daemons.length;
   const rows = daemons.map((d) => {
     const seen = d.last_seen_at ? new Date(d.last_seen_at).getTime() : 0;
     const online = seen && Date.now() - seen < 60000;
     return '<div class="daemon-row"><span class="dot ' + (online ? "on" : "") + '"></span><div class="grow"><div style="font-weight:600">' + esc(d.name || "daemon") + "</div>"
-      + '<div class="muted mono" style="font-size:12px;margin-top:2px">' + (d.workspace ? "ws " + esc(d.workspace) : "(no workspace reported)") + "</div></div>"
-      + '<span class="muted" style="font-size:12px">' + (online ? "online" : d.last_seen_at ? "last seen " + relTime(seen) : "never") + "</span></div>";
+      + '<div class="muted mono" style="font-size:12px;margin-top:2px">' + (d.workspace ? "ws " + esc(d.workspace) : "(no workspace reported yet)") + "</div></div>"
+      + '<span class="muted" style="font-size:12px">' + (online ? "online" : d.last_seen_at ? "last seen " + relTime(seen) : "never connected") + "</span>"
+      + '<button class="rowbtn" data-drename="' + d.id + '" data-dname="' + esc(d.name || "") + '">rename</button>'
+      + '<button class="rowbtn danger" data-ddelete="' + d.id + '" data-dname="' + esc(d.name || "") + '">delete</button></div>';
   }).join("");
-  $("#daemonList").innerHTML = rows || '<div class="empty">No daemons connected. Start one with <code>flounder daemon</code> (or <code>flounder ui</code> spawns a local one).</div>';
+  $("#daemonList").innerHTML = rows || '<div class="empty">No daemons registered. Click <strong>New daemon</strong> to mint a token, or run <code>flounder ui</code> (it spawns a co-located one).</div>';
+  $("#daemonList").querySelectorAll("[data-drename]").forEach((b) => b.onclick = async () => {
+    const name = prompt("Rename daemon", b.dataset.dname); if (!name || name === b.dataset.dname) return;
+    await fetch("/api/daemons/" + b.dataset.drename, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+    renderDaemons();
+  });
+  $("#daemonList").querySelectorAll("[data-ddelete]").forEach((b) => b.onclick = async () => {
+    if (!confirm('Revoke daemon "' + b.dataset.dname + '"? Its token stops working immediately. Past jobs keep their history.')) return;
+    await fetch("/api/daemons/" + b.dataset.ddelete, { method: "DELETE" });
+    renderDaemons();
+  });
 }
+
+// Mint a new daemon: prompt a name, POST, then surface the token ONCE (it is never retrievable
+// again) with the exact command to start that executor against this control plane.
+$("#daemonNewBtn").onclick = async () => {
+  const name = prompt("Name this daemon (a label, e.g. 'gpu-box' or 'laptop')");
+  if (!name || !name.trim()) return;
+  const res = await fetch("/api/daemons", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+  if (!res.ok) { alert("Could not create daemon: " + (await res.text())); return; }
+  const d = await res.json();
+  const cmd = "flounder daemon --server " + location.origin + " --token " + d.token;
+  const box = $("#daemonToken");
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:6px">✓ Daemon “' + esc(d.name) + '” registered — token shown once</div>'
+    + '<div class="muted" style="font-size:12px;margin-bottom:8px">Copy this command and run it on the executor machine. The token is not stored in cleartext here and cannot be shown again.</div>'
+    + '<div class="mono" style="display:flex;gap:8px;align-items:flex-start"><code style="flex:1;min-width:0;overflow-wrap:anywhere;background:var(--canvas-subtle);border:1px solid var(--border-muted);border-radius:6px;padding:8px 10px">' + esc(cmd) + '</code>'
+    + '<button class="btn sm" id="daemonCopyBtn">Copy</button><button class="btn sm" id="daemonTokenDismiss">Dismiss</button></div>';
+  box.hidden = false;
+  $("#daemonCopyBtn").onclick = () => { navigator.clipboard.writeText(cmd).then(() => { $("#daemonCopyBtn").textContent = "Copied"; }); };
+  $("#daemonTokenDismiss").onclick = () => { box.hidden = true; box.innerHTML = ""; };
+  renderDaemons();
+};
 
 // "Manage…" links from the project + config dialogs jump to the Providers settings
 $("#projManageProv").onclick = () => { projDialog.close(); openSettings("providers"); };

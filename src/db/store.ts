@@ -634,6 +634,22 @@ export class MetadataStore {
     return this.db.prepare("SELECT id, name, capabilities, workspace, last_seen_at, created_at FROM daemon ORDER BY created_at").all() as Array<Record<string, unknown>>;
   }
 
+  /** Rename a registered daemon (operator-facing; the token is unchanged). */
+  renameDaemon(id: number, name: string): boolean {
+    return this.db.prepare("UPDATE daemon SET name = ? WHERE id = ?").run(name, id).changes > 0;
+  }
+
+  /** Remove a daemon registration (revokes its token). Past jobs keep their history but lose the
+   * daemon pointer (FKs are ON, so null it out first rather than orphaning the row). */
+  deleteDaemon(id: number): boolean {
+    let removed = false;
+    this.transaction(() => {
+      this.db.prepare("UPDATE job SET daemon_id = NULL WHERE daemon_id = ?").run(id);
+      removed = this.db.prepare("DELETE FROM daemon WHERE id = ?").run(id).changes > 0;
+    });
+    return removed;
+  }
+
   enqueueJob(project: string, spec: unknown): number {
     const ts = now();
     const info = this.db.prepare("INSERT INTO job(project, spec_json, status, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?)").run(project, JSON.stringify(spec), ts, ts);
