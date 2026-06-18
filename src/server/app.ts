@@ -13,6 +13,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MetadataStore, type RunKind, type Coverage, type ProviderInput, type ProviderProfile, type ProjectInput } from "../db/store.js";
 import { getProviders, getModels } from "@earendil-works/pi-ai";
@@ -287,6 +288,12 @@ const ROUTES: Route[] = [
     summary: "Delete a run and its run-scoped data (findings + status events, confirm decisions). Scopes (the project inventory) and on-disk artifacts are left intact.",
     params: { id: "run id" },
     handler: (c) => { const ok = c.store.deleteRun(Number(c.params.id)); ok ? sendJson(c.res, 200, { ok: true, deleted: Number(c.params.id) }) : sendJson(c.res, 404, { error: "no such run" }); },
+  }),
+  route({
+    method: "GET", path: "/api/runs/:id/artifact",
+    summary: "Read a run's report artifact (text) from its run dir — the detailed report behind a run/decision. Allowlisted names only.",
+    params: { id: "run id" }, query: { name: "artifact filename (audit_report.md | confirm_report.md | report_f<N>.md | prepare_manifest.json | confirm_decision.json | confirm_provenance.json)" },
+    handler: runArtifact,
   }),
   route({
     method: "GET", path: "/api/runs/:id/log",
@@ -615,6 +622,27 @@ async function providerUpdate(c: Ctx): Promise<void> {
   }
   c.store.updateProvider(id, input);
   sendJson(c.res, 200, { ok: true });
+}
+
+// Serve a run's report artifact (text) from its run dir. Allowlisted filenames only (no slashes,
+// so no path traversal); the file must resolve directly inside the run dir.
+const ALLOWED_ARTIFACT = /^(audit_report\.md|confirm_report\.md|report_f\d+\.md|prepare_manifest\.json|confirm_decision\.json|confirm_provenance\.json|audit_findings\.json)$/;
+function runArtifact(c: Ctx): void {
+  const run = c.store.getRun(Number(c.params.id));
+  if (!run || !run.run_dir) return sendJson(c.res, 404, { error: "no such run, or it has no run dir" });
+  const name = c.url.searchParams.get("name") || "audit_report.md";
+  if (!ALLOWED_ARTIFACT.test(name)) return sendJson(c.res, 400, { error: "artifact not allowed", name });
+  const runDir = path.resolve(String(run.run_dir));
+  const file = path.join(runDir, name);
+  if (path.dirname(file) !== runDir) return sendJson(c.res, 400, { error: "bad path" });
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8"); // read BEFORE committing a status, so a missing file is a clean 404
+  } catch {
+    return sendJson(c.res, 404, { error: "artifact not found", name });
+  }
+  c.res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+  c.res.end(text);
 }
 
 function runStop(c: Ctx): void {

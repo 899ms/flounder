@@ -203,6 +203,17 @@
   :root[data-theme="dark"] dialog { box-shadow: 0 16px 32px rgba(1,4,9,.85); }
   dialog::backdrop { background: rgba(31,35,40,.4); }
   .dlg-head { padding: 16px; border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 600; }
+  .md-body { padding: 4px 18px 18px; font-size: 13.5px; line-height: 1.6; color: var(--fg); }
+  .md-body h1, .md-body h2, .md-body h3, .md-body h4 { margin: 18px 0 8px; line-height: 1.3; }
+  .md-body h1 { font-size: 20px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .md-body h2 { font-size: 16px; padding-bottom: 5px; border-bottom: 1px solid var(--border-muted); }
+  .md-body h3 { font-size: 14px; } .md-body h4 { font-size: 13px; color: var(--fg-muted); }
+  .md-body p { margin: 8px 0; } .md-body ul { margin: 8px 0; padding-left: 22px; } .md-body li { margin: 3px 0; }
+  .md-body code { background: var(--canvas-subtle); border: 1px solid var(--border-muted); border-radius: 5px; padding: 1px 5px; font: 12px/1.5 var(--mono); }
+  .md-body pre { background: var(--canvas-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
+  .md-body pre code { background: none; border: 0; padding: 0; font-size: 12px; }
+  .md-body hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+  .md-body a { color: var(--accent); } .md-body strong { color: var(--fg); }
   form .body { padding: 8px 16px 16px; max-height: 66vh; overflow-y: auto; }
   label { display: block; font-size: 12px; font-weight: 600; color: var(--fg); margin: 12px 0 5px; }
   input, select { width: 100%; background: var(--canvas); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font: inherit; }
@@ -283,6 +294,11 @@
   </div>
   <div class="dlg-foot"><button type="button" class="btn" id="cfgCancelBtn">Cancel</button><button class="btn primary" id="cfgSaveBtn" value="save">Save config</button></div>
 </form></dialog>
+
+<dialog id="reportDialog" class="wide"><div>
+  <div class="dlg-head" style="display:flex;align-items:center;gap:10px"><span id="reportTitle">Report</span><button type="button" class="btn sm" id="reportClose" style="margin-left:auto">Close</button></div>
+  <div id="reportBody" class="md-body" style="max-height:74vh;overflow-y:auto;padding:4px 2px"></div>
+</div></dialog>
 
 <dialog id="settingsDialog" class="wide"><div>
   <div class="dlg-head">Settings</div>
@@ -427,6 +443,58 @@ function esc(s) { return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;
 function pct(a, t) { return t > 0 ? Math.round((a / t) * 100) : 0; }
 function fmtTime(s) { if (!s) return ""; const d = new Date(s); return isNaN(d.getTime()) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }); }
 
+// --- report viewer: render a run-dir markdown report (or pretty JSON manifest) into the dialog.
+// XSS-safe: esc() the whole source FIRST (so any raw HTML in the report is inert), then add our
+// own tags via regex on the escaped text. Links are restricted to http(s) with no quotes/brackets.
+function mdToHtml(md) {
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s"'<>]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const lines = esc(String(md || "")).split("\n");
+  let html = "", para = [], inList = false, inCode = false, code = [];
+  const flushPara = () => { if (para.length) { html += "<p>" + inline(para.join(" ")) + "</p>"; para = []; } };
+  const flushList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (const line of lines) {
+    if (/^```/.test(line.trim())) {
+      if (inCode) { html += "<pre><code>" + code.join("\n") + "</code></pre>"; code = []; inCode = false; }
+      else { flushPara(); flushList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { code.push(line); continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { flushPara(); flushList(); html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); flushList(); html += "<hr>"; continue; }
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if (li) { flushPara(); if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
+    if (line.trim() === "") { flushPara(); flushList(); continue; }
+    para.push(line.trim());
+  }
+  if (inCode) html += "<pre><code>" + code.join("\n") + "</code></pre>";
+  flushPara(); flushList();
+  return html || '<div class="muted">(empty report)</div>';
+}
+function prettyJson(t) { try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return t; } }
+async function openReport(runId, name, title) {
+  const body = $("#reportBody"), dlg = $("#reportDialog");
+  $("#reportTitle").textContent = title || name;
+  body.innerHTML = '<div class="muted">Loading ' + esc(name) + '…</div>';
+  if (!dlg.open) dlg.showModal();
+  try {
+    const res = await fetch("/api/runs/" + runId + "/artifact?name=" + encodeURIComponent(name));
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      body.innerHTML = '<div class="muted">Could not load <span class="mono">' + esc(name) + '</span> — ' + esc(e.error || res.status)
+        + '.<br>The report file may not have been generated for this run yet.</div>';
+      return;
+    }
+    const text = await res.text();
+    body.innerHTML = name.endsWith(".json") ? '<pre><code>' + esc(prettyJson(text)) + '</code></pre>' : mdToHtml(text);
+  } catch (err) {
+    body.innerHTML = '<div class="muted">Failed to fetch report: ' + esc(String(err)) + '</div>';
+  }
+}
+
 // --- theme ---
 function applyTheme(t) { document.documentElement.dataset.theme = t === "dark" ? "dark" : ""; localStorage.setItem("flounder-theme", t); $("#themeBtn").innerHTML = icon(t === "dark" ? "sun" : "moon"); }
 $("#themeBtn").onclick = () => applyTheme((localStorage.getItem("flounder-theme") === "dark") ? "light" : "dark");
@@ -563,9 +631,11 @@ function renderDetail() {
     if (r.scopes_total != null) return (r.scopes_audited ?? 0) + "/" + r.scopes_total + " scopes audited";
     return r.findings_total != null ? r.findings_total + " findings" : "—";
   };
+  const reportName = (kind) => kind === "confirm" ? "confirm_report.md" : kind === "prepare" ? "prepare_manifest.json" : "audit_report.md";
   const runRowHtml = (r) => '<tr><td><span style="display:inline-flex;gap:7px;align-items:center">' + stateBadge(r.status) + ' ' + r.kind + '</span></td><td class="mono muted">' + runProgress(r)
     + '</td><td class="mono muted">' + esc((r.run_dir || "").split("/").pop()) + '</td><td class="mono muted">' + esc(r.started_at)
-    + '</td><td>' + (r.status === "running" ? "" : '<button class="rowbtn danger" data-delrun="' + r.id + '">delete</button>') + '</td></tr>';
+    + '</td><td style="white-space:nowrap">' + (r.run_dir && r.status !== "running" ? '<button class="rowbtn" data-report="' + r.id + '" data-rname="' + reportName(r.kind) + '" data-rtitle="' + esc(r.kind + " report · run " + r.id) + '">report</button> ' : "")
+    + (r.status === "running" ? "" : '<button class="rowbtn danger" data-delrun="' + r.id + '">delete</button>') + '</td></tr>';
   const runsTableHtml = (rs) => rs.length
     ? '<table><thead><tr><th>kind</th><th>progress</th><th>dir</th><th>started</th><th></th></tr></thead><tbody>' + rs.map(runRowHtml).join("") + '</tbody></table>'
     : '<div class="muted">no runs in this phase yet</div>';
@@ -590,7 +660,7 @@ function renderDetail() {
   const confirmedSection = d.confirmDecisions.length
     ? '<div class="section-title">' + icon("bug") + 'Confirmed bugs <span class="muted">(' + confirmed.length + ' reproduced of ' + d.confirmDecisions.length + ' decided)</span></div>'
       + (confirmed.length
-          ? '<div class="confirmed-box">' + confirmed.map((c) => '<div class="cbug"><span class="cbug-name">✓ ' + esc(c.bug) + '</span>' + recBadge(c.recommendation) + '</div>').join("") + '</div>'
+          ? '<div class="confirmed-box">' + confirmed.map((c) => '<div class="cbug"><span class="cbug-name">✓ ' + esc(c.bug) + '</span><span style="display:flex;gap:8px;align-items:center">' + recBadge(c.recommendation) + '<button class="rowbtn" data-report="' + c.run_id + '" data-rname="confirm_report.md" data-rtitle="' + esc("Confirm report · " + c.bug) + '">view report</button></span></div>').join("") + '</div>'
           : '<div class="muted">No bugs reproduced on the real target yet.</div>')
     : "";
   const decisionsInner = d.confirmDecisions.length
@@ -683,6 +753,7 @@ function renderDetail() {
     else body += '<div class="muted" style="margin-top:8px">' + (sc.status === "audited" ? "Result: audited — no finding recorded for this obligation (the dig surfaced no violation; full reasoning is in the run dir's audit_report.md)." : sc.status === "deferred" ? "skipped — excluded from auto-dig." : "pending — not yet audited.") + '</div>';
     row.insertAdjacentHTML("afterend", '<tr class="scope-detail"><td></td><td colspan="5" style="padding:10px 14px;background:rgba(127,127,127,.06)">' + body + '</td></tr>');
   });
+  el.querySelectorAll("[data-report]").forEach((b) => b.onclick = (e) => { e.stopPropagation(); openReport(b.dataset.report, b.dataset.rname, b.dataset.rtitle); });
   el.querySelectorAll("[data-phase]").forEach((n) => n.onclick = () => { state.phase = n.dataset.phase; renderDetail(); });
   const sp = $("#prevS"); if (sp) sp.onclick = () => { state.scopePage = Math.max(0, state.scopePage - 1); renderDetail(); };
   const sn = $("#nextS"); if (sn) sn.onclick = () => { state.scopePage += 1; renderDetail(); };
@@ -817,6 +888,7 @@ const settingsDialog = $("#settingsDialog");
 $("#settingsBtn").innerHTML = icon("gear");
 $("#settingsBtn").onclick = () => openSettings("providers");
 $("#settingsCloseBtn").onclick = () => settingsDialog.close();
+$("#reportClose").onclick = () => $("#reportDialog").close();
 document.querySelectorAll(".settings-nav button").forEach((b) => (b.onclick = () => showPane(b.dataset.pane)));
 function showPane(name) {
   document.querySelectorAll(".settings-nav button").forEach((b) => b.classList.toggle("sel", b.dataset.pane === name));
