@@ -433,6 +433,11 @@ function renderDetail() {
   const running = state.active.filter((a) => a.target === d.project.name);
   const runningRuns = d.runs.filter((r) => r.status === "running"); // stoppable, carry run ids
   const st = (running.length || runningRuns.length) ? "running" : (d.runs[0] ? d.runs[0].status : "");
+  // While a run is in flight, disable the actions that would start a SECOND run or mutate/remove
+  // the project (a concurrent run on the same target contends on its scopes/history). Edit config
+  // stays enabled — it's non-destructive and only affects the next run. Stop stays enabled.
+  const busy = running.length > 0 || runningRuns.length > 0;
+  const dis = busy ? ' disabled title="a run is in progress — stop it first"' : '';
   // Per-run progress is kind-aware: map/audit show scopes audited (live), confirm shows
   // bugs reproduced / decided (live). Derived from the confirm_decision rows for each run.
   const confByRun = {};
@@ -480,11 +485,11 @@ function renderDetail() {
       + '<div class="stat"><div class="n">' + d.runsTotal + '</div><div class="k">runs</div></div>'
     + '</div>'
     + '<div class="actions">'
-      + '<button class="btn primary" id="continueBtn">' + icon("play") + (d.runsTotal > 0 ? "Continue audit" : "Start audit") + '</button>'
-      + (d.runsTotal > 0 ? '<button class="btn" id="restartBtn">' + icon("sync") + 'Restart (re-map)</button>' : "")
-      + '<button class="btn" id="runBtn">' + icon("play") + 'Run…</button>'
+      + '<button class="btn primary" id="continueBtn"' + dis + '>' + icon("play") + (d.runsTotal > 0 ? "Continue audit" : "Start audit") + '</button>'
+      + (d.runsTotal > 0 ? '<button class="btn" id="restartBtn"' + dis + '>' + icon("sync") + 'Restart (re-map)</button>' : "")
+      + '<button class="btn" id="runBtn"' + dis + '>' + icon("play") + 'Run…</button>'
       + '<button class="btn" id="editBtn">' + icon("gear") + 'Edit config</button>'
-      + '<button class="btn danger" id="deleteBtn">' + icon("trash") + 'Delete</button>'
+      + '<button class="btn danger" id="deleteBtn"' + dis + '>' + icon("trash") + 'Delete</button>'
       + runningRuns.map((r) => '<button class="btn danger" data-runid="' + r.id + '">' + icon("x") + 'Stop ' + r.kind + ' · run ' + r.id + '</button>').join("")
     + '</div>'
     + confirmedSection
