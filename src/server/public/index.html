@@ -305,7 +305,8 @@ function attachActivity(d) {
   const slot = document.getElementById("activitySlot");
   if (slot) slot.appendChild(activityEl); // move the persistent node (with its log) into the fresh detail
   activityEl.scrollTop = activityWasBottom ? activityEl.scrollHeight : activityPrevTop; // restore the pre-re-render position (the move reset it to 0)
-  const rid = d.runs[0] ? d.runs[0].id : null;
+  const liveRun = d.runs.find((r) => r.status === "running") || d.runs[0]; // follow the RUNNING run's log, not merely the newest row
+  const rid = liveRun ? liveRun.id : null;
   if (rid === logRunId) return; // already streaming this run — keep the feed + connection
   if (logES) { logES.close(); logES = null; }
   activityEl.innerHTML = "";
@@ -399,12 +400,14 @@ $("#projSearch").oninput = () => { state.filter = $("#projSearch").value; render
 
 async function selectProject(name) {
   state.selected = name;
+  lastDetailSig = null; // force a fresh render when (re)selecting, even if the data signature matches
   state.f = { status: "", q: "", limit: 50, offset: 0, rows: [], total: 0 };
   renderList();
   await loadDetail();
   await loadFindings(true);
 }
 
+let lastDetailSig = null;
 async function loadDetail() {
   if (!state.selected) return;
   const res = await fetch("/api/projects/" + encodeURIComponent(state.selected));
@@ -413,6 +416,12 @@ async function loadDetail() {
     const sr = await fetch("/api/projects/" + encodeURIComponent(state.selected) + "/scopes");
     state.detail.scopes = sr.ok ? (await sr.json()).scopes : [];
   }
+  // Skip the re-render when nothing visible changed, so the ~1.2s live-update tick doesn't churn
+  // the whole detail DOM (which disrupts scrolling the scopes/findings and flickers). The live
+  // activity panel streams over its own SSE, so skipping the render never stalls it.
+  const sig = state.selected + "|" + JSON.stringify(state.detail);
+  if (sig === lastDetailSig) return;
+  lastDetailSig = sig;
   renderDetail();
 }
 
@@ -442,6 +451,7 @@ function renderDetail() {
   const pr = d.progress;
   const running = state.active.filter((a) => a.target === d.project.name);
   const runningRuns = d.runs.filter((r) => r.status === "running"); // stoppable, carry run ids
+  const liveRun = runningRuns[0] || d.runs[0]; // the run whose live log the activity panel follows — the RUNNING one, not merely the newest row
   const st = (running.length || runningRuns.length) ? "running" : (d.runs[0] ? d.runs[0].status : "");
   // While a run is in flight, disable the actions that would start a SECOND run or mutate/remove
   // the project (a concurrent run on the same target contends on its scopes/history). Edit config
@@ -503,7 +513,7 @@ function renderDetail() {
       + runningRuns.map((r) => '<button class="btn danger" data-runid="' + r.id + '">' + icon("x") + 'Stop ' + r.kind + ' · run ' + r.id + '</button>').join("")
     + '</div>'
     + confirmedSection
-    + (d.runs.length ? '<div class="section-title">' + icon("play") + 'Live activity <span class="muted">(' + (d.runs[0] ? d.runs[0].kind + " #" + d.runs[0].id : "") + ' — model thinking, output &amp; tool calls)</span></div><div id="activitySlot"></div>' : "")
+    + (d.runs.length ? '<div class="section-title">' + icon("play") + 'Live activity <span class="muted">(' + (liveRun ? liveRun.kind + " #" + liveRun.id : "") + ' — model thinking, output &amp; tool calls)</span></div><div id="activitySlot"></div>' : "")
     + '<div class="section-title">' + icon("play") + 'Runs <span class="muted">(' + d.runsTotal + (d.runsTotal > d.runs.length ? ", showing " + d.runs.length : "") + ')</span></div>'
     + (d.runs.length ? '<table><thead><tr><th>kind</th><th>progress</th><th>dir</th><th>started</th><th></th></tr></thead><tbody>' + runsRows + '</tbody></table>' : '<div class="muted">none</div>')
     + scopesSection
