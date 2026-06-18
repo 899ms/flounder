@@ -66,6 +66,18 @@ async function api(server: string, method: string, route: string, body?: unknown
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Fetch a run-dir artifact's text over the control plane (the same allowlisted endpoint the UI's
+ * report viewer uses). Returns undefined on any failure — callers degrade gracefully (e.g. the
+ * pipeline derives a scope note from prepare's manifest if reachable, else maps unfocused). */
+export async function fetchArtifact(server: string, runId: number, name: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${server}/api/runs/${runId}/artifact?name=${encodeURIComponent(name)}`);
+    return res.ok ? await res.text() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Enqueue the spec on the control plane and follow the run to completion. Returns the final run
  * row (so a pipeline can chain phases by its run_dir/findings), or undefined if no run started. */
 export async function launchViaApi(server: string, spec: LaunchSpec): Promise<Record<string, unknown> | undefined> {

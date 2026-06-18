@@ -5,7 +5,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultConfig, normalizeProjectContext, normalizeRoleModels, type AuditorConfig } from "./config.js";
 import { CLI_CONFIG_KEYS, configFilePath, getCliConfigValue, isCliConfigKey, loadCliConfig, setCliConfigValue, unsetCliConfigValue, type CliConfigKey } from "./config-file.js";
-import { launchViaApi, ran, resolveServer } from "./cli-client.js";
+import { launchViaApi, ran, resolveServer, fetchArtifact } from "./cli-client.js";
+import { deriveScopeNote } from "./scope-note.js";
 import type { LaunchSpec } from "./server/run-manager.js";
 import { importRunToProjectHistory, projectHistoryManifestPath } from "./trace/history.js";
 import { MetadataStore } from "./db/store.js";
@@ -308,6 +309,7 @@ function buildAuditSpec(cmd: "run" | "map" | "audit", rest: string[], cfg: Audit
     out: cfg.outputDir,
   };
   if (cfg.buildRoot) spec.buildRoot = cfg.buildRoot;
+  if (cfg.auditScopeNote && cfg.auditScopeNote.trim()) spec.scopeNote = cfg.auditScopeNote.trim(); // --scope-note, or the pipeline's prepare-derived focus
   if (cmd === "run" && rest.includes("--quick")) spec.quick = true;
   if (rest.includes("--remap")) spec.remap = true;
   if (rest.includes("--mock-llm")) spec.mockLlm = true; // offline mock model, executed by the daemon
@@ -336,6 +338,10 @@ function slugifyClue(clue: string): string {
   return slug || "target";
 }
 
+function safeJsonParse(text: string): unknown {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
 // `flounder run <clue>` — the one-command pipeline. Orchestrates the distinct phases as SEPARATE
 // tracked runs (so each stays resumable + UI-visible and the dig stays network-sealed), feeding
 // each phase's output to the next: prepare (acquire, open-world) → run (map→dig, sealed) on the
@@ -359,6 +365,20 @@ async function runPipeline(rest: string[], cfg: AuditorConfig, clue: string): Pr
   const prep = await launchViaApi(server, prepSpec);
   if (!ran(prep)) { console.error("[pipeline] prepare did not finish — stopping."); process.exitCode = 1; return; }
   const staged = `${String(prep!.run_dir)}/prepare/workspace`;
+
+  // Derive the map/dig FOCUS from prepare's manifest: the deployment-matched / in-scope components
+  // become the primary target, the rest named as trust boundaries. This is a factual restatement of
+  // what prepare staged — NOT a bug hint — so map concentrates on the target without overfitting.
+  // (A user --scope-note still composes on top.) Best-effort: no manifest reachable → map unfocused.
+  const manifestText = await fetchArtifact(server, Number(prep!.id), "prepare_manifest.json");
+  const derived = manifestText ? deriveScopeNote(safeJsonParse(manifestText)) : undefined;
+  if (derived) {
+    const userNote = readFlag(rest, "--scope-note");
+    cfg.auditScopeNote = [userNote, derived].filter((s): s is string => !!s && s.trim().length > 0).join("\n\n");
+    console.log(`[pipeline] scope focus derived from prepare manifest (${derived.split("\n").filter((l) => l.startsWith("- ")).length} components classified) — map/dig will prioritise the in-scope target.`);
+  } else {
+    console.log("[pipeline] no usable prepare manifest — map will treat all staged source as in scope.");
+  }
 
   // Phase 2 — run = map → dig, NETWORK-SEALED, on the staged source.
   console.log("\n── phase 2 · run (map → dig, network-sealed) ──");

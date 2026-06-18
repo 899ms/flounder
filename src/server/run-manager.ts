@@ -66,6 +66,7 @@ export interface LaunchSpec {
   endpoint?: string | undefined; // prepare: read-only access hint (e.g. an RPC URL)
   dir?: string | undefined; // project subdir under the daemon workspace; materials resolve under it
   models?: ProviderRoles | undefined; // per-phase provider/model/thinking overrides (from the selected profile)
+  scopeNote?: string | undefined; // map/audit: the "authorized scope note" prior — focuses map on the in-scope target (the pipeline auto-derives it from prepare's manifest; --scope-note also sets it)
   out?: string | undefined;
 }
 
@@ -86,6 +87,7 @@ export function specToConfig(spec: LaunchSpec, out: string, workspace?: string):
   if (spec.model) cfg.auditModel = spec.model;
   if (spec.thinking && THINKING.has(spec.thinking)) cfg.thinkingLevel = spec.thinking as AuditorConfig["thinkingLevel"];
   if (spec.models) cfg.models = spec.models as NonNullable<AuditorConfig["models"]>;
+  if (spec.scopeNote && spec.scopeNote.trim()) cfg.auditScopeNote = spec.scopeNote.trim(); // map/audit focus prior (from prepare's manifest or --scope-note)
   cfg.outputDir = out;
   cfg.auditMaxSteps = spec.maxSteps ?? Number.POSITIVE_INFINITY;
   cfg.auditMapSteps = spec.mapSteps ?? Number.POSITIVE_INFINITY;
