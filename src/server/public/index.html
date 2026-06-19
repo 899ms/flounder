@@ -136,6 +136,7 @@
   .s-pending { color: var(--fg-muted); border-color: var(--border); }
   .s-audited { color: var(--success-fg); border-color: rgba(63,185,80,.4); background: rgba(63,185,80,.1); }
   .s-deferred { color: var(--attention-fg); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
+  .s-auditing { color: var(--accent); border-color: var(--accent); background: var(--sel-bg); }
 
   .confirmed-box { border: 1px solid rgba(63,185,80,.4); background: rgba(63,185,80,.08); border-radius: 6px; padding: 2px 14px; }
   .cbug { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-muted); }
@@ -731,11 +732,14 @@ function renderDetail() {
   if (state.scopePage * SCOPE_PAGE >= allScopes.length) state.scopePage = 0; // clamp after the inventory changes
   const scopeSlice = allScopes.slice(state.scopePage * SCOPE_PAGE, state.scopePage * SCOPE_PAGE + SCOPE_PAGE);
   const scopeRows = scopeSlice.map((sc) => {
-    const act = sc.status === "audited" ? ""
+    const act = sc.status === "audited" || sc.status === "auditing" ? ""
       : sc.status === "deferred" ? '<button class="rowbtn" data-scope="' + esc(sc.scope_id) + '" data-sstatus="pending">Resume</button>'
       : '<button class="rowbtn" data-scope="' + esc(sc.scope_id) + '" data-sstatus="deferred">Skip</button>';
-    const dot = sc.status === "audited" ? "done" : sc.status;
-    return '<tr class="scope-row" data-sdetail="' + esc(sc.scope_id) + '" style="cursor:pointer"><td><span class="sdot ' + dot + '"></span> <span class="label s-' + sc.status + '">' + sc.status + '</span>' + (sc.status === "audited" && sc.updated_at ? '<div class="muted" style="font-size:10px;margin-top:3px">' + fmtTime(sc.updated_at) + '</div>' : '') + '</td><td class="mono">' + esc(sc.scope_id) + '</td><td>' + esc(sc.title)
+    const dot = sc.status === "audited" ? "done" : sc.status === "auditing" ? "running" : sc.status;
+    // sub-line: each audited scope shows ITS OWN dig duration; the in-progress one shows "auditing…".
+    const sub = sc.status === "auditing" ? '<div class="muted" style="font-size:10px;margin-top:3px">auditing…</div>'
+      : (sc.status === "audited" && sc.dig_seconds ? '<div class="muted" style="font-size:10px;margin-top:3px">' + fmtDur(sc.dig_seconds * 1000) + '</div>' : '');
+    return '<tr class="scope-row" data-sdetail="' + esc(sc.scope_id) + '" style="cursor:pointer"><td><span class="sdot ' + dot + '"></span> <span class="label s-' + sc.status + '">' + sc.status + '</span>' + sub + '</td><td class="mono">' + esc(sc.scope_id) + '</td><td>' + esc(sc.title)
       + '</td><td class="mono muted">' + esc(sc.location) + '</td><td class="mono muted">' + (sc.score != null ? Number(sc.score).toFixed(1) : "") + '</td><td>' + act + '</td></tr>';
   }).join("");
   const scopesInner = allScopes.length
@@ -844,7 +848,7 @@ function renderDetail() {
       + '<div class="muted" style="margin-top:5px">score ' + (sc.score != null ? Number(sc.score).toFixed(1) : "-") + ' · ' + esc(sc.status) + '</div>';
     if (finds.length) body += '<div style="margin-top:8px"><b>Result — findings for this obligation:</b></div>'
       + finds.map((f) => '<div style="margin-top:4px">' + statusBadge(f.status) + ' <b>' + esc(f.title || "") + '</b> <span class="mono muted">' + esc(f.location || "") + '</span></div>').join("");
-    else body += '<div class="muted" style="margin-top:8px">' + (sc.status === "audited" ? "Result: audited — no finding recorded for this obligation (the dig surfaced no violation; full reasoning is in the run dir's audit_report.md)." : sc.status === "deferred" ? "skipped — excluded from auto-dig." : "pending — not yet audited.") + '</div>';
+    else body += '<div class="muted" style="margin-top:8px">' + (sc.status === "audited" ? "Result: audited — no finding recorded for this obligation (the dig surfaced no violation; full reasoning is in the run dir's audit_report.md)." : sc.status === "auditing" ? "auditing — this scope is being deep-audited right now." : sc.status === "deferred" ? "skipped — excluded from auto-dig." : "pending — not yet audited.") + '</div>';
     row.insertAdjacentHTML("afterend", '<tr class="scope-detail"><td></td><td colspan="5" style="padding:10px 14px;background:rgba(127,127,127,.06)">' + body + '</td></tr>');
   });
   el.querySelectorAll("[data-report]").forEach((b) => b.onclick = (e) => { e.stopPropagation(); openReport(b.dataset.report, b.dataset.rname, b.dataset.rtitle); });

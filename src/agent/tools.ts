@@ -472,7 +472,8 @@ export interface AuditScope {
   difficulty: string;
   score: number;
   why: string;
-  status?: "pending" | "audited" | "deferred";
+  status?: "pending" | "audited" | "deferred" | "auditing";
+  digSeconds?: number; // how long this scope's deep-audit took (set when it completes)
 }
 
 /** Non-mutating check: did the session write a non-empty findings.json to scratch?

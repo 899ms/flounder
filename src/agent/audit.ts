@@ -317,6 +317,9 @@ export async function runAudit(
       // test files, build output, or findings. A bounded pool caps simultaneous digs.
       const workspaceRoots = cfg.buildRoot ? [cfg.buildRoot] : cfg.sourcePaths;
       const digScope = async (scope: AuditScope): Promise<{ findings: AgentFinding[]; steps: TranscriptStep[]; commandRuns: typeof session.commandRuns }> => {
+        scope.status = "auditing"; // mark in-progress so the live UI shows which scope is being dug
+        recorder.scopes(scopeInventory);
+        const digT0 = Date.now();
         const ws = await prepareSandboxWorkspace(workspaceRoots, logger.runDir, `audit/dig-${safeScopeDir(scope.id)}`);
         const digSession = newSession();
         digSession.workspace = ws;
@@ -342,7 +345,8 @@ export async function runAudit(
           if (finding.commandRunId) finding.commandRunId = `${scope.id}:${finding.commandRunId}`;
         }
         scope.status = "audited";
-        await logger.event("audit_dig_done", { scope: scope.id, samples, findings: unioned.length, concurrent: true });
+        scope.digSeconds = Math.max(1, Math.round((Date.now() - digT0) / 1000));
+        await logger.event("audit_dig_done", { scope: scope.id, samples, findings: unioned.length, concurrent: true, digSeconds: scope.digSeconds });
         // Resume checkpoint: persist the audited status so a kill mid-run skips this scope
         // on the next run (concurrent digs' findings live in their isolated workspaces).
         await saveScopeInventory(inventoryDir, scopeInventory);
@@ -365,11 +369,15 @@ export async function runAudit(
       // Sequential: reuse the shared map workspace (one warm-up) and let the
       // post-loop differential stage confirm.
       for (const scope of toDig) {
+        scope.status = "auditing"; // mark in-progress so the live UI shows which scope is being dug
+        recorder.scopes(scopeInventory);
+        const digT0 = Date.now();
         const { findings: unioned, steps: digSteps } = await digSamples(scope, session);
         aggregatedSteps.push(...digSteps);
         aggregated.push(...unioned);
         scope.status = "audited";
-        await logger.event("audit_dig_done", { scope: scope.id, samples, findings: unioned.length });
+        scope.digSeconds = Math.max(1, Math.round((Date.now() - digT0) / 1000));
+        await logger.event("audit_dig_done", { scope: scope.id, samples, findings: unioned.length, digSeconds: scope.digSeconds });
         // Resume checkpoint: persist the audited status + findings-so-far after each dig,
         // so a kill mid-run resumes at the next pending scope and keeps completed work.
         await saveScopeInventory(inventoryDir, scopeInventory);

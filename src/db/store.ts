@@ -22,7 +22,7 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof
 
 export type RunKind = "run" | "map" | "audit" | "verify" | "confirm" | "prepare";
 export type RunStatus = "running" | "done" | "error" | "killed";
-export type ScopeStatus = "pending" | "audited" | "deferred";
+export type ScopeStatus = "pending" | "audited" | "deferred" | "auditing";
 export type FindingStatus = "suspected" | "confirmed-executable" | "confirmed-differential" | "refuted";
 
 export interface ProjectInput {
@@ -52,6 +52,7 @@ export interface ScopeRow {
   location?: string | undefined;
   score?: number | undefined;
   status: ScopeStatus;
+  digSeconds?: number | undefined; // per-scope deep-audit duration (set when it finishes)
 }
 
 export interface FindingRow {
@@ -166,6 +167,7 @@ CREATE TABLE IF NOT EXISTS scope(
   location TEXT,
   score REAL,
   status TEXT NOT NULL,
+  dig_seconds INTEGER,            -- per-scope deep-audit duration, set when the scope finishes
   updated_at TEXT NOT NULL,
   UNIQUE(project_id, scope_id)
 );
@@ -276,6 +278,7 @@ export class MetadataStore {
       "ALTER TABLE run ADD COLUMN run_scopes_target INTEGER",
       "ALTER TABLE run ADD COLUMN run_scopes_done INTEGER",
       "ALTER TABLE run ADD COLUMN dig_started_at TEXT", // map->dig boundary for splitting a combined run's elapsed
+      "ALTER TABLE scope ADD COLUMN dig_seconds INTEGER", // per-scope deep-audit duration
       "ALTER TABLE finding ADD COLUMN tracking_status TEXT", // submission tracking: open|triaging|submitted|accepted|fixed|duplicate|rejected
     ]) {
       try {
@@ -473,19 +476,25 @@ export class MetadataStore {
 
   // --- scopes ---------------------------------------------------------------
 
-  /** Upsert the project's scope inventory (id, title, location, score, status). */
+  /** Upsert the project's scope inventory (id, title, location, score, status, dig_seconds).
+   * updated_at advances ONLY when a scope's status actually changes — the dig re-upserts the
+   * whole inventory after every scope, and re-stamping all of them would make each audited scope
+   * show the same (latest) time instead of when IT finished. dig_seconds is COALESCE-kept so a
+   * later inventory-wide upsert that omits it doesn't wipe a scope's recorded duration. */
   upsertScopes(projectId: number, scopes: ScopeRow[]): void {
     const stmt = this.db.prepare(
-      `INSERT INTO scope(project_id, scope_id, title, location, score, status, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO scope(project_id, scope_id, title, location, score, status, dig_seconds, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_id, scope_id) DO UPDATE SET
          title = excluded.title, location = excluded.location, score = excluded.score,
-         status = excluded.status, updated_at = excluded.updated_at`,
+         status = excluded.status,
+         dig_seconds = COALESCE(excluded.dig_seconds, scope.dig_seconds),
+         updated_at = CASE WHEN scope.status != excluded.status THEN excluded.updated_at ELSE scope.updated_at END`,
     );
     const ts = now();
     this.transaction(() => {
       for (const s of scopes) {
-        stmt.run(projectId, s.scopeId, s.title ?? null, s.location ?? null, s.score ?? null, s.status, ts);
+        stmt.run(projectId, s.scopeId, s.title ?? null, s.location ?? null, s.score ?? null, s.status, s.digSeconds ?? null, ts);
       }
     });
   }

@@ -177,12 +177,14 @@ export function toFindingRow(finding: AgentFinding, runDir: string): FindingRow 
 }
 
 export function toScopeRow(scope: AuditScope): ScopeRow {
+  const status = scope.status === "audited" ? "audited" : scope.status === "deferred" ? "deferred" : scope.status === "auditing" ? "auditing" : "pending";
   return {
     scopeId: scope.id,
     title: scope.obligation,
     location: scope.region,
     score: scope.score,
-    status: scope.status === "audited" ? "audited" : scope.status === "deferred" ? "deferred" : "pending",
+    status,
+    digSeconds: scope.digSeconds,
   };
 }
 
