@@ -126,6 +126,7 @@
   .s-confirmed-executable { color: var(--teal-fg); border-color: rgba(57,197,207,.4); background: rgba(57,197,207,.1); }
   .s-confirmed-source { color: var(--accent); border-color: rgba(47,129,247,.4); background: rgba(47,129,247,.1); }
   .s-suspected { color: var(--attention-fg); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.1); }
+  .s-discharged { color: var(--fg-muted); border-color: var(--border-muted); background: var(--canvas-subtle); }
   .s-refuted { color: var(--danger-fg); border-color: rgba(248,81,73,.4); background: rgba(248,81,73,.1); }
 
   .progress { height: 8px; border-radius: 6px; background: var(--border-muted); overflow: hidden; display: flex; margin-top: 12px; }
@@ -491,7 +492,7 @@ const OCT = {
 };
 const icon = (n, s) => '<svg class="octicon" width="' + (s||16) + '" height="' + (s||16) + '" viewBox="0 0 16 16" aria-hidden="true">' + OCT[n] + '</svg>';
 
-const STATUSES = ["confirmed-differential", "confirmed-executable", "confirmed-source", "suspected", "refuted"];
+const STATUSES = ["confirmed-differential", "confirmed-executable", "confirmed-source", "suspected", "discharged", "refuted"];
 function statusBadge(s) { return '<span class="label s-' + s + '">' + s + '</span>'; }
 function stateBadge(s) { const cls = ["running","done","error","killed"].includes(s) ? s : "none"; return '<span class="state ' + cls + '">' + (s || "no runs") + '</span>'; }
 function esc(s) { return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
@@ -631,6 +632,7 @@ $("#projSearch").oninput = () => { state.filter = $("#projSearch").value; render
 
 async function selectProject(name) {
   state.selected = name;
+  updateHash(); // deep-link the selection so a refresh re-opens this project
   lastDetailSig = null; // force a fresh render when (re)selecting, even if the data signature matches
   state.phase = null; // recompute the default phase tab for the newly-selected project
   state.phasePinned = false; // resume auto-follow of the running phase for this project
@@ -1268,9 +1270,29 @@ function setView(v) {
   $("main").hidden = v !== "projects";
   $("#bugsView").hidden = v !== "bugs";
   if (v === "bugs") renderBugs();
+  updateHash();
 }
 $("#navProjects").onclick = () => setView("projects");
 $("#navBugs").onclick = () => setView("bugs");
+
+// --- URL routing: the selected project / view lives in the hash, so a refresh re-opens it and
+// back/forward navigate. #p/<name> = a project; #bugs = the Bugs view; empty = the project list.
+let applyingRoute = false;
+function updateHash() {
+  if (applyingRoute) return; // we are applying the URL, not changing it
+  const h = state.view === "bugs" ? "bugs" : state.selected ? "p/" + encodeURIComponent(state.selected) : "";
+  if (("#" + h) !== location.hash) history.pushState(null, "", h ? "#" + h : location.pathname + location.search);
+}
+function routeFromHash() {
+  applyingRoute = true;
+  try {
+    const h = decodeURIComponent((location.hash || "").replace(/^#/, ""));
+    if (h === "bugs") setView("bugs");
+    else if (h.startsWith("p/")) { setView("projects"); const name = h.slice(2); if (name && name !== state.selected) selectProject(name); }
+    else setView("projects");
+  } finally { applyingRoute = false; }
+}
+window.addEventListener("popstate", routeFromHash);
 
 async function renderBugs() {
   const qs = new URLSearchParams();
@@ -1342,6 +1364,7 @@ function connect() {
 }
 loadProviders(); // so the detail header can show the selected provider's name
 connect();
+routeFromHash(); // open the project/view named in the URL on first load
 </script>
 </body>
 </html>
