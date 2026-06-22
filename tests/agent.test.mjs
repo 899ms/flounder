@@ -142,7 +142,25 @@ test("prepare manifest normalization turns ended in-progress manifests into term
     { status: "verified", gaps: [{ id: "old", status: "open" }] },
     { components: 0, matched: 0, unverified: 0, sourcePinned: 0, issues: ["ignored"] },
   );
-  assert.equal(existing.status, "verified");
+  assert.equal(existing.status, "partial");
+
+  const placeholder = normalizePrepareManifest(
+    {
+      status: "done",
+      components: [
+        {
+          identity: "official source",
+          platform: "GitHub",
+          revision: "pending resolution",
+          staged_path: "pending",
+          match: "n/a-source-only-pending",
+        },
+      ],
+    },
+    { components: 1, matched: 0, unverified: 0, sourcePinned: 0, issues: [] },
+  );
+  assert.equal(placeholder.status, "partial");
+  assert.match(placeholder.status_reason, /placeholders/);
 });
 
 test("report manifest is compact but keeps finding-relevant path hints", () => {

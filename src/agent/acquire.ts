@@ -152,9 +152,21 @@ export function normalizePrepareManifest(manifest: unknown, validation: PrepareV
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return manifest;
   const row = manifest as Record<string, unknown>;
   const current = typeof row.status === "string" ? row.status.trim().toLowerCase() : "";
-  if (["ready", "done", "complete", "completed", "verified", "partial"].includes(current)) return manifest;
   const openGaps = hasOpenPrepareGaps(row);
-  const status = validation.issues.length > 0 || validation.unverified > 0 || openGaps ? "partial" : "complete";
+  const pendingPlaceholders = hasPendingPreparePlaceholders(row);
+  const needsReview = validation.issues.length > 0 || validation.unverified > 0 || openGaps || pendingPlaceholders;
+  if (["ready", "done", "complete", "completed", "verified", "partial"].includes(current)) {
+    if (!needsReview) return manifest;
+    return {
+      ...row,
+      status: "partial",
+      status_reason:
+        current === "partial" && typeof row.status_reason === "string" && row.status_reason.trim()
+          ? row.status_reason
+          : "prepare run ended with unresolved gaps, placeholders, or validation issues",
+    };
+  }
+  const status = needsReview ? "partial" : "complete";
   return {
     ...row,
     status,
@@ -162,7 +174,7 @@ export function normalizePrepareManifest(manifest: unknown, validation: PrepareV
       typeof row.status_reason === "string" && row.status_reason.trim()
         ? row.status_reason
         : status === "partial"
-          ? "prepare run ended with unresolved gaps or validation issues"
+          ? "prepare run ended with unresolved gaps, placeholders, or validation issues"
           : "prepare run ended with staged neutral materials ready for sealed audit",
   };
 }
@@ -232,13 +244,15 @@ function validatePrepareManifest(manifest: unknown, matchDeployed: boolean): Pre
         ?? provenance?.metadata
         ?? objectRecord(provenance?.code_digest)?.sha256,
     );
+    const unresolvedFields = pendingPreparePlaceholderFields(c, provenance, deploymentMatch);
+    if (unresolvedFields.length > 0) issues.push(`${id}: unresolved prepare placeholder(s): ${unresolvedFields.join(", ")}`);
     if (deployed) {
       deployedComponents += 1;
       if (match === "matched") out.matched += 1;
       else if (match === "unverified") out.unverified += 1;
       else issues.push(`${id}: deployed on "${platform}" but match="${match || "missing"}" — a deployed component must be "matched" or "unverified"`);
     } else {
-      if (revision.length > 0) out.sourcePinned += 1;
+      if (revision.length > 0 && !isPendingPreparePlaceholder(revision)) out.sourcePinned += 1;
       else issues.push(`${id}: no deployment and no pinned source origin (need repo+revision / package+version / path+digest)`);
     }
   }
@@ -356,14 +370,61 @@ function hasOpenPrepareGaps(manifest: Record<string, unknown>): boolean {
   if (!Array.isArray(gaps)) return false;
   return gaps.some((gap) => {
     if (gap === undefined || gap === null) return false;
-    if (typeof gap === "string") return gap.trim().length > 0;
+    if (typeof gap === "string") return isPendingPreparePlaceholder(gap);
     if (typeof gap !== "object" || Array.isArray(gap)) return true;
     const row = gap as Record<string, unknown>;
     if (row.resolved === true) return false;
     const status = typeof row.status === "string" ? row.status.trim().toLowerCase() : "";
     if (["closed", "resolved", "complete", "completed", "done", "verified"].includes(status)) return false;
-    return true;
+    if (["open", "pending", "partial", "unresolved", "blocked"].includes(status)) return true;
+    return isPendingPreparePlaceholder(row.id) || isPendingPreparePlaceholder(row.kind) || isPendingPreparePlaceholder(row.description) || isPendingPreparePlaceholder(row.note) || isPendingPreparePlaceholder(row.where);
   });
+}
+
+function hasPendingPreparePlaceholders(manifest: Record<string, unknown>): boolean {
+  const comps = Array.isArray(manifest.components) ? (manifest.components as Array<Record<string, unknown>>) : [];
+  return comps.some((component) => {
+    const deploymentMatch = objectRecord(component.deployment_match);
+    const provenance = objectRecord(component.provenance) ?? objectRecord(component.origin);
+    return pendingPreparePlaceholderFields(component, provenance, deploymentMatch).length > 0;
+  });
+}
+
+function pendingPreparePlaceholderFields(
+  component: Record<string, unknown>,
+  provenance?: Record<string, unknown>,
+  deploymentMatch?: Record<string, unknown>,
+): string[] {
+  const revision = component.revision
+    ?? provenance?.revision
+    ?? provenance?.commit
+    ?? provenance?.tag
+    ?? provenance?.ref
+    ?? provenance?.branch
+    ?? provenance?.repo_revision
+    ?? provenance?.source_pin
+    ?? provenance?.source_verifier
+    ?? provenance?.metadata
+    ?? objectRecord(provenance?.code_digest)?.sha256;
+  const fields: Array<[string, unknown]> = [
+    ["revision", revision],
+    ["staged_path", component.staged_path ?? component.stagedPath ?? component.path],
+    ["match", component.match ?? deploymentMatch?.status],
+  ];
+  return fields.filter(([, value]) => isPendingPreparePlaceholder(value)).map(([label]) => label);
+}
+
+function isPendingPreparePlaceholder(value: unknown): boolean {
+  const raw = str(value).toLowerCase();
+  if (!raw) return false;
+  if (["pending", "pending resolution", "unresolved", "unknown", "tbd", "todo", "open"].includes(raw)) return true;
+  if (raw.includes("n/a-source-only-pending")) return true;
+  return raw.includes("pending resolution")
+    || raw.includes("still being resolved")
+    || raw.includes("to be resolved")
+    || raw.includes("not yet resolved")
+    || raw.includes("unresolved")
+    || raw.includes("unverified placeholder");
 }
 
 function historyLocation(cfg: AuditorConfig): { outputDir: string; targetName: string; historyDir?: string } {

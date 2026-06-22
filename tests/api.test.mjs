@@ -878,6 +878,65 @@ test("api: terminal prepare runs display stale in-progress manifests as partial"
   });
 });
 
+test("api: terminal prepare manifests with unresolved placeholders display as partial", async () => {
+  await withServer(async (base, out) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    const created = await json(await post("/api/projects", { name: "placeholder-prepared-target" }));
+    const runDir = path.join(out, "placeholder-prepared-target-prepare-test");
+    const workspace = path.join(runDir, "prepare", "workspace");
+    await mkdir(path.join(workspace, "source", "target"), { recursive: true });
+    await writeFile(path.join(workspace, "source", "target", "README.md"), "official source snapshot\n");
+    await writeFile(
+      path.join(workspace, "prepare_manifest.json"),
+      JSON.stringify({
+        status: "done",
+        clue: "official source around a date",
+        posture: "blind",
+        answer_firewall: "clean",
+        real_target: {
+          requires_confirmation: false,
+          mode: "source-only",
+          reason: "No live deployment is in scope.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: false,
+            allowed_network_actions: "none",
+            recommended_method: "Run local source-level checks only.",
+            not_required_reason: "No live deployment is in scope.",
+          },
+        },
+        components: [
+          {
+            identity: "official source",
+            platform: "GitHub",
+            revision: "pending resolution",
+            staged_path: "pending",
+            in_scope: true,
+            match: "n/a-source-only-pending",
+          },
+        ],
+        gaps: ["exact source revision still being resolved"],
+      }),
+    );
+
+    const store = MetadataStore.openForOutput(out);
+    try {
+      const runId = store.startRun({ projectId: created.id, kind: "prepare", runDir, provider: "openai-codex", model: "gpt-5.5" });
+      store.finishRun(runId, "done");
+    } finally {
+      store.close();
+    }
+
+    const detail = await json(await fetch(base + "/api/projects/" + created.uuid));
+    assert.equal(detail.prepareSummary.manifestState, "partial");
+    assert.equal(detail.prepareSummary.sourcePinned, 0);
+    assert.match(detail.prepareSummary.issues.join("\n"), /unresolved prepare placeholder/);
+    assert.match(detail.prepareSummary.issues.join("\n"), /staged materials are usable but partial/);
+  });
+});
+
 test("api: project detail previews live scope checkpoints before daemon ingest", async () => {
   await withServer(async (base, out) => {
     const json = (r) => r.json();

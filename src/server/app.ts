@@ -884,33 +884,28 @@ function readPrepareSummary(run: Record<string, unknown>): Record<string, unknow
   let sourcePinned = 0;
   let inScope = 0;
   const componentRows = components.slice(0, 8).map((component) => summarizePrepareComponent(component));
+  const openPrepareGaps = hasOpenPrepareGaps(manifest?.gaps);
   for (const component of components) {
     const summary = summarizePrepareComponent(component);
+    const unresolvedFields = pendingPrepareComponentPlaceholderFields(component, summary);
     if (summary.inScope) inScope += 1;
     if (summary.deployed && summary.match === "matched") matched += 1;
     else if (summary.deployed && summary.match === "unverified") unverified += 1;
-    if (summary.revision) sourcePinned += 1;
+    const revisionPinned = Boolean(summary.revision) && !isPendingPreparePlaceholder(summary.revision);
+    if (revisionPinned) sourcePinned += 1;
+    if (unresolvedFields.length > 0) issues.push(`${summary.identity}: unresolved prepare placeholder(s): ${unresolvedFields.join(", ")}`);
     if (summary.deployed && summary.match !== "matched" && summary.match !== "unverified") {
       issues.push(`${summary.identity}: deployed on ${summary.platform || "unknown platform"} but match is ${summary.match || "missing"}`);
     }
-    if (!summary.deployed && !summary.revision) {
+    if (!summary.deployed && !revisionPinned) {
       issues.push(`${summary.identity}: source origin is not pinned`);
     }
   }
   if (unverified > 0) issues.push(`${unverified} deployed component(s) are unverified and should be treated as trust boundaries`);
+  if (openPrepareGaps) issues.push("prepare manifest has unresolved material gaps");
 
   const rawManifestState = stringValue(manifest?.status);
   const runStatus = stringValue(run.status);
-  const terminalPrepareRun = runStatus !== "running";
-  const manifestState = manifestStatus === "present" && terminalPrepareRun && rawManifestState.toLowerCase() === "in_progress"
-    ? "partial"
-    : rawManifestState;
-  if (manifestStatus === "present" && manifestState && !["ready", "done", "complete", "completed", "verified", "partial"].includes(manifestState.toLowerCase())) {
-    issues.push(`prepare manifest status is ${manifestState}; treat staged materials as not fully resolved`);
-  }
-  if (manifestStatus === "present" && manifestState === "partial" && rawManifestState.toLowerCase() === "in_progress") {
-    issues.push("prepare run ended before all material gaps were closed; staged materials are usable but partial");
-  }
 
   const posture = stringValue(manifest?.posture);
   const answerFirewall = describeAnswerFirewall(manifest?.answer_firewall, posture);
@@ -921,6 +916,22 @@ function readPrepareSummary(run: Record<string, unknown>): Record<string, unknow
   if (manifestStatus === "present") {
     if (!realTarget.reported) issues.push("real-target verification plan is missing");
     for (const issue of realTarget.issues) issues.push(issue);
+  }
+
+  const terminalPrepareRun = runStatus !== "running";
+  const rawManifestStateLower = rawManifestState.toLowerCase();
+  let manifestState = rawManifestState;
+  const terminalManifestState = ["ready", "done", "complete", "completed", "verified"].includes(rawManifestStateLower);
+  if (manifestStatus === "present" && manifestState && !["ready", "done", "complete", "completed", "verified", "partial"].includes(manifestState.toLowerCase())) {
+    issues.push(`prepare manifest status is ${manifestState}; treat staged materials as not fully resolved`);
+  }
+  if (manifestStatus === "present" && terminalPrepareRun && (rawManifestStateLower === "in_progress" || terminalManifestState) && issues.length > 0) {
+    manifestState = "partial";
+    if (rawManifestStateLower === "in_progress") {
+      issues.push("prepare run ended before all material gaps were closed; staged materials are usable but partial");
+    } else {
+      issues.push("prepare run ended with unresolved gaps, placeholders, or validation issues; staged materials are usable but partial");
+    }
   }
 
   return {
@@ -1019,6 +1030,56 @@ function normalizePrepareMatchStatus(value: string): string {
   if (raw.includes("unverified") || raw.includes("not_verified") || raw.includes("no_match")) return "unverified";
   if (raw === "matched" || raw.includes("verified") || raw.includes("matched") || raw.includes("sourcify")) return "matched";
   return raw;
+}
+
+function pendingPrepareComponentPlaceholderFields(component: Record<string, unknown>, summary: Record<string, unknown>): string[] {
+  const origin = objectValue(component.origin) ?? objectValue(component.provenance);
+  const deploymentMatch = objectValue(component.deployment_match);
+  const revision = component.revision
+    ?? origin?.revision
+    ?? origin?.commit
+    ?? origin?.tag
+    ?? origin?.ref
+    ?? origin?.branch
+    ?? origin?.repo_revision
+    ?? origin?.source_pin
+    ?? origin?.source_verifier
+    ?? origin?.metadata
+    ?? objectValue(origin?.code_digest)?.sha256;
+  const fields: Array<[string, unknown]> = [
+    ["revision", revision],
+    ["staged_path", component.staged_path ?? component.stagedPath ?? component.path ?? summary.stagedPath],
+    ["match", component.match ?? deploymentMatch?.status ?? summary.match],
+  ];
+  return fields.filter(([, value]) => isPendingPreparePlaceholder(value)).map(([label]) => label);
+}
+
+function hasOpenPrepareGaps(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((gap) => {
+    if (gap === undefined || gap === null) return false;
+    if (typeof gap === "string") return isPendingPreparePlaceholder(gap);
+    if (typeof gap !== "object" || Array.isArray(gap)) return true;
+    const row = gap as Record<string, unknown>;
+    if (row.resolved === true) return false;
+    const status = stringValue(row.status).toLowerCase();
+    if (["closed", "resolved", "complete", "completed", "done", "verified"].includes(status)) return false;
+    if (["open", "pending", "partial", "unresolved", "blocked"].includes(status)) return true;
+    return isPendingPreparePlaceholder(row.id) || isPendingPreparePlaceholder(row.kind) || isPendingPreparePlaceholder(row.description) || isPendingPreparePlaceholder(row.note) || isPendingPreparePlaceholder(row.where);
+  });
+}
+
+function isPendingPreparePlaceholder(value: unknown): boolean {
+  const raw = stringValue(value).toLowerCase();
+  if (!raw) return false;
+  if (["pending", "pending resolution", "unresolved", "unknown", "tbd", "todo", "open"].includes(raw)) return true;
+  if (raw.includes("n/a-source-only-pending")) return true;
+  return raw.includes("pending resolution")
+    || raw.includes("still being resolved")
+    || raw.includes("to be resolved")
+    || raw.includes("not yet resolved")
+    || raw.includes("unresolved")
+    || raw.includes("unverified placeholder");
 }
 
 interface PrepareGroundTruthSummary {
