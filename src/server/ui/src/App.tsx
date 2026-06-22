@@ -1510,7 +1510,7 @@ function ProjectSidebar({ projects, selected, onSelect, onNew }: { projects: Pro
               className={`project-row${selected === project.uuid ? " sel" : ""}`}
               style={{ "--project-color": projectAccent(project.uuid) } as React.CSSProperties}
               aria-current={selected === project.uuid ? "page" : undefined}
-              aria-label={`Open project ${project.name}`}
+              aria-label={`Open project ${project.name}. ${projectStatusTitle(project)}`}
               onClick={() => onSelect(project.uuid)}
             >
               <span className="project-row-top">
@@ -1528,9 +1528,10 @@ function ProjectSidebar({ projects, selected, onSelect, onNew }: { projects: Pro
 
 function ProjectStatusIcon({ project }: { project: ProjectSnapshot }) {
   const status = projectBadgeStatus(project) ?? "none";
+  const title = projectStatusTitle(project);
   return (
-    <span className={`project-status-icon ${status}`} role="img" title={projectStatusTitle(project)} aria-label={projectStatusTitle(project)}>
-      <Icon name={projectStatusIcon(project)} size={13} />
+    <span className={`project-status-icon ${status}`} title={title} aria-hidden="true">
+      <Icon name={projectStatusIcon(project)} size={14} />
     </span>
   );
 }
