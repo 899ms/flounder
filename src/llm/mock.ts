@@ -77,7 +77,7 @@ function auditActionFor(user: string): string {
   if (!user.includes("audit_repro.test.mjs")) {
     return action("Write a local-only test harness in the sandbox workspace.", "write", {
       path: "audit_repro.test.mjs",
-      content: `import test from 'node:test';\n\ntest('${AUDIT_SUCCESS_PATTERN}', () => {});\n`,
+      content: `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { confirmsMissingConstraintHarness } from './mock_target.mjs';\n\ntest('${AUDIT_SUCCESS_PATTERN}', () => { assert.equal(confirmsMissingConstraintHarness(), true); console.log('${AUDIT_SUCCESS_PATTERN}'); });\n`,
     });
   }
   if (!user.includes("action: bash")) {

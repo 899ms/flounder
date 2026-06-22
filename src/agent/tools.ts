@@ -6,6 +6,7 @@ import { prepareWorkspaceToolchain } from "./prepare.js";
 import {
   firstBlockedSandboxFile,
   matchSuccessPatterns,
+  listWorkspaceFiles,
   normalizeRelativePath,
   prepareSandboxWorkspace,
   resolveWorkspacePathForRead,
@@ -65,6 +66,8 @@ export interface AgentFinding {
 export interface CommandRunRecord {
   id: string;
   passed: boolean;
+  targetLinked?: boolean;
+  targetLinkReason?: string;
   command: string;
   /** Structured command, so the framework can re-run it for differential confirmation. */
   commandSpec: ReproductionCommand;
@@ -316,7 +319,7 @@ const editTool: AgentTool = {
 const bashTool: AgentTool = {
   name: "bash",
   description:
-    'Run one local command in the copied sandbox workspace. args: {"cmd": string, "purpose"?: "inspect"|"build"|"confirm" (default inspect), "cwd"?: relative, "expected_exit_code"?: int, "success_patterns"?: [string], "timeout_ms"?: int}. Shell control operators, remote networks, destructive commands, and paths outside the workspace are blocked. purpose=inspect is for exploration (ls/find/rg/cat/sed/jq), tool availability checks (which nargo), and local JSON reads (python -m json.tool file); it never confirms anything. purpose=build is for dependency resolution and compilation (cargo build/fetch, cmake -S/-B/--build, ninja, make, npm install, go mod download, forge build, pip install, …) to make the workspace buildable; it has side effects but is NOT confirmation-eligible. For CMake, prefer generator-neutral `cmake -S <src> -B <build>` then `cmake --build <build> --parallel 2` on large targets; pass `-G Ninja` only after `ninja --version` succeeds, and keep parallelism bounded. purpose=confirm must be a real local test runner (cargo test, ctest, forge test, go test, node --test, pytest, …) with success_patterns; only a confirm command that exits as expected with every success_pattern present becomes confirmation-eligible and citable as command_id for confirmed-executable.',
+    'Run one local command in the copied sandbox workspace. args: {"cmd": string, "purpose"?: "inspect"|"build"|"confirm" (default inspect), "cwd"?: relative, "expected_exit_code"?: int, "success_patterns"?: [string], "timeout_ms"?: int}. Shell control operators, remote networks, destructive commands, and paths outside the workspace are blocked. purpose=inspect is for exploration (ls/find/rg/cat/sed/jq), tool availability checks (which nargo), and local JSON reads (python -m json.tool file); it never confirms anything. purpose=build is for dependency resolution and compilation (cargo build/fetch, cmake -S/-B/--build, ninja, make, npm install, go mod download, forge build, pip install, …) to make the workspace buildable; it has side effects but is NOT confirmation-eligible. For CMake, prefer generator-neutral `cmake -S <src> -B <build>` then `cmake --build <build> --parallel 2` on large targets; pass `-G Ninja` only after `ninja --version` succeeds, and keep parallelism bounded. purpose=confirm must be a real local test runner (cargo test, ctest, forge test, go test, node --test, pytest, …) with success_patterns; only a confirm command that exits as expected, observes every success_pattern, and executes a test linked to pristine target source becomes confirmation-eligible and citable as command_id for confirmed-executable.',
   async run(args, ctx) {
     const normalized = normalizeBashCommand(args, ctx.cfg);
     if ("error" in normalized) return { observation: normalized.error };
@@ -355,11 +358,20 @@ const bashTool: AgentTool = {
     // the gate that keeps an inspection command (e.g. cat of a model-authored file)
     // from forging executable confirmation by echoing a success pattern.
     const patternCheck = isConfirm ? matchSuccessPatterns(normalized.successPatterns, [result]) : { matched: [], missing: [] };
+    const targetLink = isConfirm ? confirmCommandTargetLink(normalized.command, ctx.session) : { linked: false, reason: "not a confirm run" };
     const passed =
-      isConfirm && eligibleByType && exitMatched && normalized.successPatterns.length > 0 && patternCheck.missing.length === 0 && patternCheck.matched.length > 0;
+      isConfirm
+      && eligibleByType
+      && targetLink.linked
+      && exitMatched
+      && normalized.successPatterns.length > 0
+      && patternCheck.missing.length === 0
+      && patternCheck.matched.length > 0;
     const record: CommandRunRecord = {
       id: runId,
       passed,
+      targetLinked: targetLink.linked,
+      targetLinkReason: targetLink.reason,
       command: normalized.raw,
       commandSpec: normalized.command,
       successPatterns: normalized.successPatterns,
@@ -390,7 +402,7 @@ const bashTool: AgentTool = {
       ? `command ${runId} (${normalized.purpose}): exit=${result.exitCode}${result.timedOut ? " timedOut" : ""}.`
       : passed
         ? `command ${runId}: CONFIRMATION-ELIGIBLE PASS; cite command_id="${runId}" in findings.json for confirmed-executable.`
-        : `command ${runId}: not confirmation-eligible (${confirmFailureReason(eligibleByType, normalized, exitMatched, result, patternCheck)}).`;
+        : `command ${runId}: not confirmation-eligible (${confirmFailureReason(eligibleByType, targetLink, normalized, exitMatched, result, patternCheck)}).`;
     return {
       observation: `${verdict}\n--- stdout ---\n${tail(result.stdout) || "(empty)"}\n--- stderr ---\n${tail(result.stderr) || "(empty)"}`,
       meta: { runId, passed, purpose: normalized.purpose },
@@ -400,6 +412,7 @@ const bashTool: AgentTool = {
 
 function confirmFailureReason(
   eligibleByType: boolean,
+  targetLink: { linked: boolean; reason: string },
   normalized: { command: ReproductionCommand; successPatterns: string[] },
   exitMatched: boolean,
   result: ReproductionCommandResult,
@@ -408,9 +421,88 @@ function confirmFailureReason(
   if (!eligibleByType) {
     return `purpose=confirm requires a local test/build runner (cargo test, ctest, forge test, go test, node --test, pytest, …); "${normalized.command.program}" is an inspection command, so it cannot confirm a finding`;
   }
+  if (!targetLink.linked) return targetLink.reason;
   if (normalized.successPatterns.length === 0) return "purpose=confirm requires success_patterns describing the invariant break or patched regression";
   if (!exitMatched) return `exit=${result.exitCode} expected=${result.expectedExitCode} timedOut=${result.timedOut}`;
   return `missing success patterns: ${patternCheck.missing.join(" | ")}`;
+}
+
+function confirmCommandTargetLink(command: ReproductionCommand, session: AgentSession): { linked: boolean; reason: string } {
+  const baseline = session.baselineFiles;
+  if (!baseline || baseline.size === 0) return { linked: false, reason: "no pristine target-source baseline was captured for this workspace" };
+  const fileArgs = commandFileArgs(command, session);
+  if (fileArgs.length === 0) return { linked: true, reason: "project test runner did not target a standalone scratch file" };
+  for (const fileArg of fileArgs) {
+    if (baselineHasPathLike(baseline, fileArg)) return { linked: true, reason: `test target ${fileArg} is part of the pristine target source` };
+    const scratch = session.scratchFiles.get(fileArg);
+    if (scratch && scratchLinksToBaseline(fileArg, scratch, baseline)) {
+      return { linked: true, reason: `test target ${fileArg} imports pristine target source` };
+    }
+  }
+  return {
+    linked: false,
+    reason:
+      "purpose=confirm must execute the target code path; the command only targets model-written standalone file(s) that do not import pristine target source",
+  };
+}
+
+function commandFileArgs(command: ReproductionCommand, session: AgentSession): string[] {
+  const out: string[] = [];
+  const skipValueAfter = new Set(["--test-dir", "-C", "--config", "--manifest-path", "--package", "-p", "--match-test", "--match-path", "-R"]);
+  for (let idx = 0; idx < command.args.length; idx += 1) {
+    const arg = command.args[idx] ?? "";
+    if (skipValueAfter.has(arg)) {
+      idx += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    const normalized = normalizeRelativePath(arg);
+    if (!normalized) continue;
+    if (session.scratchFiles.has(normalized) || session.baselineFiles?.has(normalized) || /\.[A-Za-z0-9]+$/.test(path.posix.basename(normalized))) {
+      out.push(normalized);
+    }
+  }
+  return out;
+}
+
+function scratchLinksToBaseline(filePath: string, content: string, baseline: Set<string>): boolean {
+  const dir = path.posix.dirname(filePath);
+  const specifiers = sourceSpecifiers(content);
+  for (const specifier of specifiers) {
+    if (specifier.startsWith("source/") && baselineHasPathLike(baseline, specifier)) return true;
+    if (specifier.startsWith("./") || specifier.startsWith("../")) {
+      const resolved = normalizeRelativePath(path.posix.join(dir, specifier));
+      if (resolved && baselineHasPathLike(baseline, resolved)) return true;
+    }
+  }
+  return false;
+}
+
+function sourceSpecifiers(content: string): string[] {
+  const out: string[] = [];
+  const patterns = [
+    /\bimport\s+(?:[^"'()]+?\s+from\s+)?["']([^"']+)["']/g,
+    /\bexport\s+[^"']+?\s+from\s+["']([^"']+)["']/g,
+    /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      if (match[1]) out.push(match[1]);
+    }
+  }
+  return out;
+}
+
+function baselineHasPathLike(baseline: Set<string>, candidate: string): boolean {
+  const normalized = normalizeRelativePath(candidate);
+  if (!normalized) return false;
+  if (baseline.has(normalized)) return true;
+  const withoutExt = normalized.replace(/\.[^/.]+$/, "");
+  for (const existing of baseline) {
+    if (existing === withoutExt || existing.replace(/\.[^/.]+$/, "") === withoutExt) return true;
+    if (existing.startsWith(`${withoutExt}/index.`)) return true;
+  }
+  return false;
 }
 
 function commandOutputPreview(result: ReproductionCommandResult): string {
@@ -448,6 +540,7 @@ async function ensureWorkspace(ctx: ToolContext): Promise<SandboxWorkspace | und
   if (ctx.cfg.sourcePaths.length === 0) return undefined;
   const workspace = await prepareSandboxWorkspace(ctx.cfg.sourcePaths, ctx.logger.runDir, "audit/workspace");
   ctx.session.workspace = workspace;
+  ctx.session.baselineFiles = await listWorkspaceFiles(workspace.absolute);
   await ctx.logger.event("audit_workspace", { workspace: workspace.relative });
   return workspace;
 }

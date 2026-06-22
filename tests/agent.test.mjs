@@ -229,9 +229,36 @@ test("read, write, edit, and bash operate on loaded material and the copied work
       content: "import test from 'node:test';\n\ntest('local harness success', () => {});\n",
     }, ctx);
     const run = await tool("bash").run({ cmd: "node --test audit_repro.test.mjs", purpose: "confirm", success_patterns: ["local harness success"] }, ctx);
-    assert.match(run.observation, /CONFIRMATION-ELIGIBLE PASS/);
+    assert.match(run.observation, /not confirmation-eligible/);
+    assert.match(run.observation, /standalone file/);
     assert.equal(ctx.session.commandRuns.length, 1);
+    assert.equal(ctx.session.commandRuns[0].passed, false);
+    assert.equal(ctx.session.commandRuns[0].targetLinked, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("confirmed executable commands must link model-written tests to pristine target source", async () => {
+  const dir = await tempDir();
+  try {
+    const target = path.join(dir, "target");
+    await mkdir(target, { recursive: true });
+    await writeFile(path.join(target, "vulnerable.mjs"), "export function acceptsBadInput(value) { return value === 'bad'; }\n");
+    const cfg = defaultConfig();
+    cfg.sourcePaths = [target];
+    const logger = await tempLogger(dir);
+    const ctx = { cfg, source: [], corpus: [], memory: new ProjectMemory(path.join(dir, "memory.jsonl")), logger, session: newSession() };
+
+    await tool("write").run({
+      path: "linked_repro.test.mjs",
+      content:
+        "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { acceptsBadInput } from './vulnerable.mjs';\n\ntest('target path executes', () => { assert.equal(acceptsBadInput('bad'), true); console.log('TARGET_PATH_CONFIRMED'); });\n",
+    }, ctx);
+    const run = await tool("bash").run({ cmd: "node --test linked_repro.test.mjs", purpose: "confirm", success_patterns: ["TARGET_PATH_CONFIRMED"] }, ctx);
+    assert.match(run.observation, /CONFIRMATION-ELIGIBLE PASS/);
     assert.equal(ctx.session.commandRuns[0].passed, true);
+    assert.equal(ctx.session.commandRuns[0].targetLinked, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
