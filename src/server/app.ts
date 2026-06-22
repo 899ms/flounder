@@ -225,7 +225,7 @@ const ROUTES: Route[] = [
     method: "GET", path: "/api/projects/:uuid/findings",
     summary: "List findings, paginated + filterable, each with its status timeline (suspect→confirm→refute).",
     params: { uuid: "project UUID" },
-    query: { status: "string? — exact status filter", q: "string? — text search (title/location)", limit: "number? (default 50)", offset: "number? (default 0)" },
+    query: { status: "string? — exact status or execution-confirmed alias", q: "string? — text search (title/location)", limit: "number? (default 50)", offset: "number? (default 0)" },
     handler: findingsList,
   }),
   route({
@@ -305,13 +305,15 @@ const ROUTES: Route[] = [
 
   route({
     method: "GET", path: "/api/bugs",
-    summary: "Every finding across ALL projects (joined with project name) plus aggregate stats — the cross-project Bugs dashboard. Optional ?status= and ?tracking= filters; ?limit/&offset paginate.",
+    summary: "Every finding across ALL projects (joined with project name) plus aggregate stats — the cross-project Bugs dashboard. Optional ?status= (exact or execution-confirmed) and ?tracking= filters; ?limit/&offset paginate.",
     handler: (c) => {
       const status = c.url.searchParams.get("status") || undefined;
+      const exactStatus = status === "execution-confirmed" ? undefined : status;
       const tracking = c.url.searchParams.get("tracking") || undefined;
       const limit = Number(c.url.searchParams.get("limit")) || undefined;
       const offset = Number(c.url.searchParams.get("offset")) || undefined;
-      const all = reportableFindings(c.store.listGlobalFindings({ status, tracking, limit: 10_000, offset: 0 }));
+      const all = reportableFindings(c.store.listGlobalFindings({ status: exactStatus, tracking, limit: 10_000, offset: 0 }))
+        .filter((finding) => findingStatusMatches(finding, status));
       const start = Math.max(0, Math.floor(offset ?? 0));
       const end = start + Math.max(1, Math.floor(limit ?? 200));
       sendJson(c.res, 200, { findings: all.slice(start, end).map(findingSummaryRow), stats: globalFindingStats(all) });
@@ -1210,7 +1212,7 @@ function findingsList(c: Ctx): void {
     const limit = clampInt(c.url.searchParams.get("limit"), 50, 1, 500);
     const offset = clampInt(c.url.searchParams.get("offset"), 0, 0, 1_000_000);
     const rows = reportableFindings(c.store.listFindings(id))
-      .filter((finding) => !status || finding.status === status)
+      .filter((finding) => findingStatusMatches(finding, status))
       .filter((finding) => !search || `${finding.title ?? ""} ${finding.location ?? ""}`.toLowerCase().includes(search.toLowerCase()));
     const findings = rows.slice(offset, offset + limit).map((finding) => findingDisplayRow({ ...finding, timeline: c.store.findingTimeline(Number(finding.id)) }));
     sendJson(c.res, 200, { findings, total: rows.length, limit, offset });
@@ -1271,6 +1273,13 @@ function isConfirmedFindingStatus(status: string): boolean {
 
 function countAuditConfirmedFindings(rows: Array<Record<string, unknown>>): number {
   return rows.filter((row) => isConfirmedFindingStatus(String(row.status ?? "").toLowerCase())).length;
+}
+
+function findingStatusMatches(row: Record<string, unknown>, status?: string): boolean {
+  if (!status) return true;
+  const rowStatus = String(row.status ?? "").toLowerCase();
+  if (status === "execution-confirmed") return rowStatus === "confirmed-executable" || rowStatus === "confirmed-differential";
+  return rowStatus === status;
 }
 
 const FINDING_STATUS_RANK: Record<string, number> = {

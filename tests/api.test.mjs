@@ -52,6 +52,10 @@ test("api: GET /api is a self-describing catalog of every resource + operation",
     const scopePatch = cat.endpoints.find((e) => e.method === "PATCH" && e.path === "/api/projects/:uuid/scopes/:scopeId");
     assert.match(scopePatch.summary, /top of the next auto-dig batch/i);
     assert.match(scopePatch.body.prioritize, /top/i);
+    const projectFindings = cat.endpoints.find((e) => e.method === "GET" && e.path === "/api/projects/:uuid/findings");
+    assert.match(projectFindings.query.status, /execution-confirmed/);
+    const globalFindings = cat.endpoints.find((e) => e.method === "GET" && e.path === "/api/bugs");
+    assert.match(globalFindings.summary, /execution-confirmed/);
     const runLog = cat.endpoints.find((e) => e.method === "GET" && e.path === "/api/runs/:id/log");
     assert.match(runLog.query.tail, /JSON/);
   });
@@ -585,10 +589,16 @@ test("api: duplicate findings from different scopes collapse to one user-facing 
     assert.equal(findings.total, 1);
     assert.equal(findings.findings[0].status, "confirmed-executable");
     assert.equal(findings.findings[0].evidence, "stronger executable proof");
+    const confirmedFindings = await json(await fetch(base + projectPath + "/findings?status=execution-confirmed"));
+    assert.equal(confirmedFindings.total, 1);
+    assert.equal(confirmedFindings.findings[0].status, "confirmed-executable");
 
     const bugs = await json(await fetch(base + "/api/bugs"));
     assert.equal(bugs.stats.total, 1);
     assert.equal(bugs.findings[0].status, "confirmed-executable");
+    const confirmedBugs = await json(await fetch(base + "/api/bugs?status=execution-confirmed"));
+    assert.equal(confirmedBugs.stats.total, 1);
+    assert.equal(confirmedBugs.findings[0].status, "confirmed-executable");
   });
 });
 
