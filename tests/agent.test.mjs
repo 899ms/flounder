@@ -92,10 +92,15 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
 
   const preparePrompt = buildSessionPrompt({ cfg: defaultConfig(), fileManifest: "(empty)", prepare: "Clue: official source" });
   assert.ok(preparePrompt.includes("Write prepare_manifest.json EARLY"), "prepare should persist a usable manifest before chasing long-tail dependencies");
+  assert.ok(preparePrompt.includes("early checkpoint"), "prepare should checkpoint a partial manifest before long-tail acquisition");
   assert.ok(preparePrompt.includes("ordinary package-manager dependency"), "prepare should not chase every package dependency when manifests can resolve them");
   assert.ok(preparePrompt.includes("stop once the sealed audit has enough neutral material"), "prepare needs explicit stop criteria");
   assert.ok(preparePrompt.includes("Do NOT audit yet"), "prepare should not spend the acquisition phase hunting bugs");
   assert.ok(preparePrompt.includes("leave all bug discovery to map/dig"), "prepare should preserve the blind audit boundary");
+  assert.ok(preparePrompt.includes("real_target"), "prepare should require a real-target confirmation plan");
+  assert.ok(preparePrompt.includes("requires_confirmation"), "prepare should explicitly decide whether real-target confirmation is required");
+  assert.ok(preparePrompt.includes("chain_id"), "prepare should capture chain identifiers for deployed targets");
+  assert.ok(preparePrompt.includes("source-only"), "prepare should support source-only audits without forcing chain confirmation");
 
   const reportPrompt = buildSessionPrompt({ cfg: defaultConfig(), fileManifest: "x.rs", report: "[]" });
   assert.ok(reportPrompt.includes("No-fabrication rule"), "report mode should prohibit unsupported report details");
@@ -111,7 +116,17 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
 
 test("prepare manifest normalization turns ended in-progress manifests into terminal states", () => {
   const clean = normalizePrepareManifest(
-    { clue: "official source", components: [{ identity: "repo", platform: "none", revision: "abc", match: "n/a" }] },
+    {
+      clue: "official source",
+      real_target: {
+        requires_confirmation: false,
+        mode: "source-only",
+        reason: "Official source audit; no deployed target is in scope.",
+        ground_truth: [],
+        confirm_guidance: { required: false, allowed_network_actions: "none", recommended_method: "local source tests", not_required_reason: "Source-only target." },
+      },
+      components: [{ identity: "repo", platform: "none", revision: "abc", match: "n/a" }],
+    },
     { components: 1, matched: 0, unverified: 0, sourcePinned: 1, issues: [] },
   );
   assert.equal(clean.status, "complete");

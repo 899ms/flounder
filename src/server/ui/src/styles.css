@@ -1075,6 +1075,67 @@ small {
   gap: 8px;
 }
 
+.prepare-real-target {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--canvas-subtle);
+}
+
+.prepare-real-target.warn {
+  border-color: color-mix(in srgb, var(--warning) 34%, var(--border));
+  background: color-mix(in srgb, var(--warning) 7%, var(--canvas));
+}
+
+.prepare-real-target.needs-confirm {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--canvas));
+}
+
+.prepare-real-target.ok {
+  border-color: color-mix(in srgb, var(--success) 24%, var(--border));
+  background: color-mix(in srgb, var(--success) 5%, var(--canvas));
+}
+
+.prepare-real-target strong,
+.prepare-real-target small {
+  display: block;
+}
+
+.prepare-real-target small {
+  color: var(--fg-muted);
+}
+
+.prepare-ground-truth {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prepare-ground-truth span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 10px;
+  background: var(--canvas);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.prepare-ground-truth strong {
+  display: inline;
+  color: var(--fg);
+}
+
+.prepare-real-target-issues {
+  color: var(--warning-strong, var(--warning));
+}
+
 .prepare-components {
   display: grid;
   gap: 8px;

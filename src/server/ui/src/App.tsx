@@ -2057,6 +2057,7 @@ function PrepareMaterialsCard({ summary }: { summary: PrepareSummary }) {
   const components = summary.components ?? [];
   const issues = summary.issues ?? [];
   const gaps = summary.gaps ?? [];
+  const realTarget = summary.realTarget;
   const manifestReady = summary.manifestStatus === "present";
   const needsReview = issues.length > 0 || gaps.length > 0;
   const quality = needsReview ? "warn" : manifestReady ? "ok" : "pending";
@@ -2089,7 +2090,9 @@ function PrepareMaterialsCard({ summary }: { summary: PrepareSummary }) {
         <div className="prepare-meta">
           <span>Answer firewall: <strong>{summary.answerFirewall || "not reported"}</strong></span>
           {summary.posture ? <span>Posture: <strong>{summary.posture}</strong></span> : null}
+          <span>Real target: <strong>{realTargetLabel(realTarget)}</strong></span>
         </div>
+        <PrepareRealTargetPanel realTarget={realTarget} />
         {components.length ? (
           <div className="prepare-components" aria-label="Prepared components">
             {components.map((component, index) => (
@@ -2118,6 +2121,63 @@ function PrepareMaterialsCard({ summary }: { summary: PrepareSummary }) {
       </div>
     </Card>
   );
+}
+
+function PrepareRealTargetPanel({ realTarget }: { realTarget?: PrepareSummary["realTarget"] }) {
+  if (!realTarget?.reported) {
+    return (
+      <div className="prepare-real-target warn">
+        <div>
+          <strong>Real-target confirmation plan missing</strong>
+          <small>Prepare must say whether later confirmation uses source-only tests, a released artifact, a service, or a read-only chain fork.</small>
+        </div>
+      </div>
+    );
+  }
+  const ground = realTarget.groundTruth ?? [];
+  const issues = realTarget.issues ?? [];
+  const required = realTarget.requiresConfirmation === true;
+  const tone = issues.length ? "warn" : required ? "needs-confirm" : "ok";
+  const method = realTarget.guidance?.recommendedMethod || realTarget.guidance?.notRequiredReason || realTarget.reason;
+  return (
+    <div className={`prepare-real-target ${tone}`}>
+      <div>
+        <strong>{required ? "Real-target confirmation required" : "Source or artifact confirmation is enough"}</strong>
+        <small>{[realTarget.mode, method].filter(Boolean).join(" · ") || "No method reported"}</small>
+      </div>
+      {ground.length ? (
+        <div className="prepare-ground-truth" aria-label="Real target ground truth">
+          {ground.slice(0, 6).map((entry, index) => (
+            <span key={`${entry.role ?? "target"}-${entry.address ?? index}`} title={[entry.evidence, entry.stagedComponent].filter(Boolean).join(" · ") || undefined}>
+              <strong>{entry.role || entry.kind || "target"}</strong>
+              {groundTruthLabel(entry)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {issues.length ? <small className="prepare-real-target-issues">{issues.slice(0, 3).join(" · ")}</small> : null}
+    </div>
+  );
+}
+
+function realTargetLabel(realTarget?: PrepareSummary["realTarget"]): string {
+  if (!realTarget?.reported) return "missing";
+  if (realTarget.requiresConfirmation === true) return "required";
+  if (realTarget.requiresConfirmation === false) return "not required";
+  return "unspecified";
+}
+
+function groundTruthLabel(entry: NonNullable<NonNullable<PrepareSummary["realTarget"]>["groundTruth"]>[number]): string {
+  const chain = entry.kind === "chain" || entry.chainId !== undefined;
+  const network = [entry.network, entry.chainId !== undefined ? `#${entry.chainId}` : ""].filter(Boolean).join(" ");
+  const target = entry.address ? shortAddress(entry.address) : entry.block || entry.sourceMatch || "";
+  return [chain ? network : entry.kind, target].filter(Boolean).join(" · ");
+}
+
+function shortAddress(value: string): string {
+  const trimmed = value.trim();
+  if (/^0x[a-f0-9]{40}$/i.test(trimmed)) return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
+  return trimmed.length > 26 ? `${trimmed.slice(0, 16)}…${trimmed.slice(-6)}` : trimmed;
 }
 
 function readableScopeDeclaration(value?: string): string {

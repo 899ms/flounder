@@ -917,6 +917,11 @@ function readPrepareSummary(run: Record<string, unknown>): Record<string, unknow
   if (answerFirewall !== "clean" && answerFirewall !== "not reported" && !answerFirewall.startsWith("clean ")) {
     issues.push(`answer firewall is ${answerFirewall}`);
   }
+  const realTarget = summarizePrepareRealTarget(manifest?.real_target ?? manifest?.realTarget);
+  if (manifestStatus === "present") {
+    if (!realTarget.reported) issues.push("real-target verification plan is missing");
+    for (const issue of realTarget.issues) issues.push(issue);
+  }
 
   return {
     runId: run.id,
@@ -936,6 +941,7 @@ function readPrepareSummary(run: Record<string, unknown>): Record<string, unknow
     sourcePinned,
     gaps: summarizePrepareGaps(manifest?.gaps),
     offscope: summarizePrepareGaps(manifest?.offscope),
+    realTarget,
     issues: uniqueStrings(issues).slice(0, 12),
     workspace,
   };
@@ -948,7 +954,7 @@ function summarizePrepareComponent(component: Record<string, unknown>): Record<s
   const normalizedPlatform = platform.trim().toLowerCase();
   const deployed = normalizedPlatform.length > 0 && normalizedPlatform !== "none" && normalizedPlatform !== "n/a";
   const originSource = stringValue(component.source) || stringValue(origin?.url) || stringValue(origin?.repo_url);
-  const originRevision = stringValue(component.revision) || stringValue(origin?.commit) || stringValue(origin?.tag) || stringValue(origin?.ref) || stringValue(origin?.branch);
+  const originRevision = stringValue(component.revision) || stringValue(origin?.revision) || stringValue(origin?.commit) || stringValue(origin?.tag) || stringValue(origin?.ref) || stringValue(origin?.branch);
   const stagedPath = stringValue(component.staged_path) || stringValue(component.path);
   const identity = stringValue(component.identity) || stagedPath || stringValue(component.id) || stringValue(component.name) || "unknown component";
   const match = stringValue(component.match) || stringValue(deploymentMatch?.status);
@@ -963,6 +969,108 @@ function summarizePrepareComponent(component: Record<string, unknown>): Record<s
     match: match.toLowerCase(),
     matchEvidence: stringValue(component.match_evidence) || stringValue(deploymentMatch?.evidence) || stringValue(deploymentMatch?.reason) || stringValue(deploymentMatch?.note),
     deployed,
+  };
+}
+
+interface PrepareGroundTruthSummary {
+  kind: string;
+  network: string;
+  chainId?: number | undefined;
+  address: string;
+  role: string;
+  block: string;
+  sourceMatch: string;
+  evidence: string;
+  stagedComponent: string;
+}
+
+interface PrepareRealTargetSummary {
+  reported: boolean;
+  requiresConfirmation?: boolean | undefined;
+  mode?: string;
+  reason?: string;
+  groundTruth: PrepareGroundTruthSummary[];
+  guidance?: {
+    required?: boolean | undefined;
+    allowedNetworkActions: string;
+    recommendedMethod: string;
+    notRequiredReason: string;
+  };
+  issues: string[];
+}
+
+function summarizePrepareRealTarget(value: unknown): PrepareRealTargetSummary {
+  const row = objectValue(value);
+  if (!row) return { reported: false, groundTruth: [], issues: [] };
+  const requiredRaw = row.requires_confirmation ?? row.requiresConfirmation ?? row.requires_real_target_confirmation;
+  const requiresConfirmation = typeof requiredRaw === "boolean" ? requiredRaw : undefined;
+  const issues: string[] = [];
+  if (requiresConfirmation === undefined) issues.push("real_target.requires_confirmation is missing");
+  const mode = stringValue(row.mode);
+  if (!mode) issues.push("real_target.mode is missing");
+  const guidance = objectValue(row.confirm_guidance) ?? objectValue(row.confirmGuidance);
+  const methodFallback = stringValue(row.method);
+  if (!guidance) issues.push("real_target.confirm_guidance is missing");
+  const ground = Array.isArray(row.ground_truth)
+    ? row.ground_truth
+    : Array.isArray(row.groundTruth)
+      ? row.groundTruth
+      : [];
+  if (requiresConfirmation === true && ground.length === 0) issues.push("real_target requires confirmation but lists no ground truth");
+  if (requiresConfirmation === false) {
+    const reason = stringValue(row.not_required_reason ?? row.reason ?? guidance?.not_required_reason ?? guidance?.notRequiredReason);
+    if (!reason) issues.push("real_target says confirmation is not required but gives no reason");
+  }
+  const groundTruth = ground.slice(0, 12).map((entry) => summarizePrepareGroundTruth(entry));
+  for (const entry of groundTruth) {
+    if (!entry.kind) issues.push(`${entry.role || "ground truth entry"} missing kind`);
+    if (!entry.role) issues.push(`${entry.kind || "ground truth entry"} missing role`);
+    if (!entry.sourceMatch) issues.push(`${entry.role || entry.kind || "ground truth entry"} missing source match`);
+    if (entry.kind === "chain") {
+      if (!entry.network) issues.push(`${entry.role || "chain entry"} missing network`);
+      if (entry.chainId === undefined) issues.push(`${entry.role || "chain entry"} missing chain id`);
+      if (!entry.address) issues.push(`${entry.role || "chain entry"} missing address`);
+    }
+  }
+  const summary: PrepareRealTargetSummary = {
+    reported: true,
+    requiresConfirmation,
+    mode,
+    reason: stringValue(row.reason ?? row.not_required_reason ?? guidance?.not_required_reason ?? guidance?.notRequiredReason),
+    groundTruth,
+    issues: uniqueStrings(issues),
+  };
+  if (guidance) {
+    summary.guidance = {
+      required: typeof guidance.required === "boolean" ? guidance.required : undefined,
+      allowedNetworkActions: stringValue(guidance.allowed_network_actions ?? guidance.allowedNetworkActions),
+      recommendedMethod: stringValue(guidance.recommended_method ?? guidance.recommendedMethod),
+      notRequiredReason: stringValue(guidance.not_required_reason ?? guidance.notRequiredReason),
+    };
+  } else if (methodFallback) {
+    summary.guidance = {
+      required: requiresConfirmation,
+      allowedNetworkActions: "",
+      recommendedMethod: methodFallback,
+      notRequiredReason: "",
+    };
+  }
+  return summary;
+}
+
+function summarizePrepareGroundTruth(value: unknown): PrepareGroundTruthSummary {
+  const row = objectValue(value) ?? {};
+  const chainIdValue = numericValue(row.chain_id ?? row.chainId);
+  return {
+    kind: stringValue(row.kind),
+    network: stringValue(row.network),
+    chainId: chainIdValue === null ? undefined : chainIdValue,
+    address: stringValue(row.address),
+    role: stringValue(row.role),
+    block: stringValue(row.block),
+    sourceMatch: stringValue(row.source_match ?? row.sourceMatch ?? row.deployment_match_status ?? row.deploymentMatchStatus),
+    evidence: stringValue(row.evidence),
+    stagedComponent: stringValue(row.staged_component ?? row.stagedComponent),
   };
 }
 

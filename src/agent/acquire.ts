@@ -200,17 +200,21 @@ function validatePrepareManifest(manifest: unknown, matchDeployed: boolean): Pre
     issues.push("no prepare_manifest.json (or not a JSON object) was produced");
     return out;
   }
+  const manifestRow = manifest as Record<string, unknown>;
   const comps = (manifest as { components?: unknown }).components;
   const list = Array.isArray(comps) ? (comps as Array<Record<string, unknown>>) : [];
   out.components = list.length;
   if (list.length === 0) issues.push("manifest lists no components");
+  let deployedComponents = 0;
   for (const c of list) {
+    const provenance = objectRecord(c?.provenance) ?? objectRecord(c?.origin);
     const id = String(c?.identity ?? c?.role ?? "?");
     const platform = String(c?.platform ?? "").trim().toLowerCase();
     const deployed = platform.length > 0 && platform !== "none" && platform !== "n/a";
     const match = String(c?.match ?? "").trim().toLowerCase();
-    const revision = String(c?.revision ?? "").trim();
+    const revision = str(c?.revision ?? provenance?.revision ?? provenance?.commit ?? provenance?.tag ?? provenance?.ref);
     if (deployed) {
+      deployedComponents += 1;
       if (match === "matched") out.matched += 1;
       else if (match === "unverified") out.unverified += 1;
       else issues.push(`${id}: deployed on "${platform}" but match="${match || "missing"}" — a deployed component must be "matched" or "unverified"`);
@@ -223,7 +227,79 @@ function validatePrepareManifest(manifest: unknown, matchDeployed: boolean): Pre
   if (matchDeployed && out.unverified > 0) {
     issues.push(`${out.unverified} deployed component(s) UNVERIFIED — staged source not proven to match the live code; the audit should treat each as a trust boundary`);
   }
+  validateRealTargetPlan(manifestRow, { issues, deployedComponents });
   return out;
+}
+
+function validateRealTargetPlan(manifest: Record<string, unknown>, ctx: { issues: string[]; deployedComponents: number }): void {
+  const realTarget = objectRecord(manifest.real_target) ?? objectRecord(manifest.realTarget);
+  if (!realTarget) {
+    ctx.issues.push("prepare manifest missing real_target verification plan");
+    return;
+  }
+
+  const requiredRaw = realTarget.requires_confirmation ?? realTarget.requiresConfirmation ?? realTarget.requires_real_target_confirmation;
+  if (typeof requiredRaw !== "boolean") {
+    ctx.issues.push("real_target.requires_confirmation must be true or false");
+    return;
+  }
+
+  const mode = str(realTarget.mode).toLowerCase();
+  if (!mode) ctx.issues.push("real_target.mode is missing");
+
+  const groundTruth = Array.isArray(realTarget.ground_truth)
+    ? realTarget.ground_truth
+    : Array.isArray(realTarget.groundTruth)
+      ? realTarget.groundTruth
+      : [];
+  const guidance = objectRecord(realTarget.confirm_guidance) ?? objectRecord(realTarget.confirmGuidance);
+  if (!guidance) ctx.issues.push("real_target.confirm_guidance is missing");
+  const guidanceRequired = guidance ? guidance.required : undefined;
+  if (guidance && typeof guidanceRequired === "boolean" && guidanceRequired !== requiredRaw) {
+    ctx.issues.push("real_target.confirm_guidance.required disagrees with real_target.requires_confirmation");
+  }
+
+  if (requiredRaw) {
+    if (groundTruth.length === 0) ctx.issues.push("real_target requires confirmation but has no ground_truth entries");
+    groundTruth.forEach((entry, index) => {
+      const row = objectRecord(entry);
+      if (!row) {
+        ctx.issues.push(`real_target.ground_truth[${index}] is not an object`);
+        return;
+      }
+      const kind = str(row.kind).toLowerCase();
+      const address = str(row.address);
+      const network = str(row.network);
+      const role = str(row.role);
+      const sourceMatch = str(row.source_match ?? row.sourceMatch).toLowerCase();
+      if (!kind) ctx.issues.push(`real_target.ground_truth[${index}] missing kind`);
+      if (!role) ctx.issues.push(`real_target.ground_truth[${index}] missing role`);
+      if (!sourceMatch) ctx.issues.push(`real_target.ground_truth[${index}] missing source_match`);
+      if (kind === "chain") {
+        if (!network) ctx.issues.push(`real_target.ground_truth[${index}] chain entry missing network`);
+        if (row.chain_id === undefined && row.chainId === undefined) ctx.issues.push(`real_target.ground_truth[${index}] chain entry missing chain_id`);
+        if (!address) ctx.issues.push(`real_target.ground_truth[${index}] chain entry missing address`);
+      }
+    });
+    const method = str(guidance?.recommended_method ?? guidance?.recommendedMethod);
+    if (!method) ctx.issues.push("real_target.confirm_guidance.recommended_method is missing");
+  } else {
+    const reason = str(realTarget.not_required_reason ?? realTarget.reason ?? guidance?.not_required_reason ?? guidance?.notRequiredReason);
+    if (!reason) ctx.issues.push("real_target says confirmation is not required but gives no reason");
+    if (ctx.deployedComponents > 0) {
+      ctx.issues.push("real_target says confirmation is not required even though deployed components were staged");
+    }
+  }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function str(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
 }
 
 function hasOpenPrepareGaps(manifest: Record<string, unknown>): boolean {

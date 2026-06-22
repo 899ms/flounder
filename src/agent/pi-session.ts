@@ -70,7 +70,11 @@ export async function runAuditSession(input: {
 
   const steps: TranscriptStep[] = [];
   let stepNo = 0;
-  const customTools = input.tools.map((tool) => toPiTool(tool, input.ctx, () => (stepNo += 1), steps, input.logger));
+  const hasScratch = (basename: string): boolean =>
+    [...input.ctx.session.scratchFiles.keys()].some((key) => key === basename || key.endsWith(`/${basename}`));
+  const customTools = input.tools.map((tool) =>
+    toPiTool(tool, input.ctx, () => (stepNo += 1), steps, input.logger, (n) => prepareCheckpointHint(input.prepare, n, hasScratch("prepare_manifest.json"))),
+  );
 
   const { session } = await createAgentSession({
     model,
@@ -184,8 +188,6 @@ export async function runAuditSession(input: {
   // are exact. The findings finalize must NOT bypass the confirmation gate: it asks
   // only for the obligation analysis (discharged or suspected), never for a confirmed
   // status without a passing test.
-  const hasScratch = (basename: string): boolean =>
-    [...input.ctx.session.scratchFiles.keys()].some((key) => key === basename || key.endsWith(`/${basename}`));
   const finalizeIfEmpty = async (): Promise<void> => {
     if (finalizing) return;
     if (input.prepare) {
@@ -295,7 +297,22 @@ function looksLikeAuthError(message: string): boolean {
   return /no api key|not logged in|unauthorized|authenticate|\/login|oauth|credential/i.test(message);
 }
 
-function toPiTool(tool: AgentTool, ctx: ToolContext, nextStep: () => number, steps: TranscriptStep[], logger: RunLogger): ToolDefinition {
+const PREPARE_CHECKPOINT_TOOL_STEPS = 16;
+
+function prepareCheckpointHint(prepare: string | undefined, step: number, hasManifest: boolean): string {
+  if (!prepare || hasManifest || step < PREPARE_CHECKPOINT_TOOL_STEPS) return "";
+  return [
+    "PREPARE CHECKPOINT REQUIRED:",
+    "prepare_manifest.json is still missing after the early checkpoint window.",
+    "Your next action should write prepare_manifest.json with the stable schema: top-level clue, posture, match_deployed, scope_declaration, real_target, components, offscope, gaps, answer_firewall.",
+    "Each component should use role, identity, platform, revision, source, staged_path, in_scope, scope_basis, match, and match_evidence.",
+    "real_target should use requires_confirmation, mode, reason, ground_truth, and confirm_guidance; each ground_truth entry should use kind, network, chain_id, address, role, block, source_match, evidence, and staged_component.",
+    "Use explicit gaps for unresolved deployment addresses, docs, source matches, or real-target confirmation details; set pending details as gaps and rewrite the manifest later as you resolve them.",
+    "Do not continue long-tail fetching before this checkpoint exists.",
+  ].join(" ");
+}
+
+function toPiTool(tool: AgentTool, ctx: ToolContext, nextStep: () => number, steps: TranscriptStep[], logger: RunLogger, checkpointHint?: (step: number, toolName: string) => string): ToolDefinition {
   return defineTool({
     name: tool.name,
     label: tool.name,
@@ -311,6 +328,11 @@ function toPiTool(tool: AgentTool, ctx: ToolContext, nextStep: () => number, ste
         observation = result.observation;
       } catch (error) {
         observation = `error: tool "${tool.name}" failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      const hint = checkpointHint?.(n, tool.name) ?? "";
+      if (hint) {
+        await logger.event("audit_prepare_checkpoint_nudge", { step: n, tool: tool.name });
+        observation = `${observation}\n\n${hint}`;
       }
       steps.push({ n, thought: "", tool: tool.name, args, observation });
       // Rich live-activity line: the actual command/file the agent ran + its outcome.
@@ -406,7 +428,7 @@ const MAP_FINALIZE_PROMPT = `Your exploration budget is spent. Do NOT read, grep
 
 export const FINDINGS_FINALIZE_PROMPT = `Your budget is spent. Do NOT read, grep, or run anything else. Based ONLY on the analysis and command results you have already produced, WRITE findings.json now at the workspace root as your very next action — call the write tool once with ONLY actionable findings: UNMET obligations, concrete suspected bugs, and confirmed bugs that cite an already-passing purpose=confirm command_id. Do NOT include discharged/safe/no-issue obligations, ranked shortlist notes, or obligation ledgers. If you found no actionable bug, write [] exactly. Do NOT invent a confirmation and DO NOT mark anything confirmed by assertion. After writing, emit {"done": true}. Output only the write tool call.`;
 
-const PREPARE_FINALIZE_PROMPT = `Your budget is spent. Do NOT fetch or run anything else. WRITE prepare_manifest.json now at the workspace root as your very next action — call the write tool once with an object: {"clue","posture","match_deployed"(bool),"scope_declaration":"<where the in-scope set came from: the audited addresses and/or the project's own scope doc>","components":[{"role":"target|dependency|implementation|verifier|other","identity":"<address / package / path / etc.>","platform":"<chain / registry / host, or 'none'>","revision":"<block / version / commit / digest>","source":"<verified|published|repo@commit|unverified>","staged_path":"<workspace-relative path/glob of this component's code>","in_scope":(bool),"scope_basis":"deployed-match|project-scope-doc|first-party|dependency|off-deployment-boundary","match":"matched|unverified|n/a","match_evidence"}],"offscope":[{"kind":"circuit|spec|docs|prior-audit|other","resolved":(bool),"where","note"}],"gaps":[...],"answer_firewall":"clean|flagged: ...","notes"}. Record honestly: a deployed component you could not match is "unverified"; a non-deployed one is "n/a" with its source origin pinned; in_scope=true for the deployment-matched target / project-declared in-scope / first-party code, false for third-party deps and off-deployment trust boundaries (a FACT from deployment + the project's scope, not a guess about bugs); anything you could not find is a gap, not a guess. After writing, emit {"done": true}. Output only the write tool call.`;
+const PREPARE_FINALIZE_PROMPT = `Your budget is spent. Do NOT fetch or run anything else. WRITE prepare_manifest.json now at the workspace root as your very next action — call the write tool once with an object: {"clue","posture","match_deployed"(bool),"scope_declaration":"<where the in-scope set came from: the audited addresses and/or the project's own scope doc>","real_target":{"requires_confirmation":(bool),"mode":"deployed-contract|published-artifact|deployed-service|source-only|unknown","reason":"<why real-target confirmation is or is not required>","ground_truth":[{"kind":"chain|package|service|repo|other","network":"<e.g. ethereum-mainnet, n/a if source-only>","chain_id":<number|null>,"address":"<contract/address or empty if n/a>","role":"proxy|implementation|verifier|registry|asset|package|service|source","block":"<block/tag/version/latest/n/a>","source_match":"matched|unverified|n/a","evidence":"<source of this ground-truth record>","staged_component":"<component id/path>"}],"confirm_guidance":{"required":(bool),"allowed_network_actions":"none|read-only|read-and-local-fork","recommended_method":"<local source tests, package replay, local fork at block..., etc.>","not_required_reason":"<only when required=false>"}},"components":[{"role":"target|dependency|implementation|verifier|other","identity":"<address / package / path / etc.>","platform":"<chain / registry / host, or 'none'>","revision":"<block / version / commit / digest>","source":"<verified|published|repo@commit|unverified>","staged_path":"<workspace-relative path/glob of this component's code>","in_scope":(bool),"scope_basis":"deployed-match|project-scope-doc|first-party|dependency|off-deployment-boundary","match":"matched|unverified|n/a","match_evidence"}],"offscope":[{"kind":"circuit|spec|docs|prior-audit|other","resolved":(bool),"where","note"}],"gaps":[...],"answer_firewall":"clean|flagged: ...","notes"}. Record honestly: a deployed component you could not match is "unverified"; a non-deployed one is "n/a" with its source origin pinned; in_scope=true for the deployment-matched target / project-declared in-scope / first-party code, false for third-party deps and off-deployment trust boundaries (a FACT from deployment + the project's scope, not a guess about bugs). real_target is mandatory: if the later confirm must use a chain fork or published deployment, list the exact network/chain_id/address/role ground truth; if source-only is enough, set requires_confirmation=false and explain why. Anything you could not find is a gap, not a guess. After writing, emit {"done": true}. Output only the write tool call.`;
 
 function buildPrepareSessionPrompt(input: { prepare: string; fileManifest: string; memoryHint?: string }): string {
   return `${AUDIT_PREPARE_SYSTEM}
@@ -420,7 +442,7 @@ ${input.fileManifest}
 Durable memory from prior prepares of this target:
 ${input.memoryHint && input.memoryHint.trim().length > 0 ? input.memoryHint.trim() : "(empty)"}
 
-Begin: resolve the clue, stage the target/security-critical source and official answer-free docs, mainnet-match or source-pin each component, write prepare_manifest.json early, record gaps honestly, and stop once the sealed audit has enough neutral material to proceed.`;
+Begin: resolve the clue, stage the target/security-critical source and official answer-free docs, mainnet-match or source-pin each component, write prepare_manifest.json early, record real_target confirmation requirements, record gaps honestly, and stop once the sealed audit has enough neutral material to proceed.`;
 }
 
 const CONFIRM_FINALIZE_PROMPT = `Your budget is spent. Do NOT read, fork, fetch, or run anything else. Based ONLY on what you have already reproduced, WRITE confirm_decision.json now at the workspace root as your very next action — call the write tool once with a JSON array, one row per DISTINCT bug: {"bug","members":[...],"distinct_fix","reproduced":"yes"|"no"|"could-not-set-up","repro_evidence","repro_command_id","fix_patch":{"path","old","new"},"patched_success_patterns":[...],"corroboration","novelty","human_gates","recommendation":"submit-candidate"|"needs-human"|"drop"}. Mark "reproduced":"yes" ONLY for a bug you actually reproduced on the real target with a passing command_id; otherwise "no"/"could-not-set-up" with the crutch/blocker named. Include repro_command_id + fix_patch + patched_success_patterns for any source-level PoC so the framework can verify consolidation by execution. Partial but honest beats empty. After writing, emit {"done": true}. Output only the write tool call.`;

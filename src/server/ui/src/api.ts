@@ -171,6 +171,33 @@ export interface PrepareWorkspaceSummary {
   sampleFiles?: string[];
 }
 
+export interface PrepareGroundTruthSummary {
+  kind?: string;
+  network?: string;
+  chainId?: number;
+  address?: string;
+  role?: string;
+  block?: string;
+  sourceMatch?: string;
+  evidence?: string;
+  stagedComponent?: string;
+}
+
+export interface PrepareRealTargetSummary {
+  reported?: boolean;
+  requiresConfirmation?: boolean;
+  mode?: string;
+  reason?: string;
+  groundTruth?: PrepareGroundTruthSummary[];
+  guidance?: {
+    required?: boolean;
+    allowedNetworkActions?: string;
+    recommendedMethod?: string;
+    notRequiredReason?: string;
+  };
+  issues?: string[];
+}
+
 export interface PrepareSummary {
   runId?: number;
   status?: string;
@@ -189,6 +216,7 @@ export interface PrepareSummary {
   sourcePinned?: number;
   gaps?: string[];
   offscope?: string[];
+  realTarget?: PrepareRealTargetSummary;
   issues?: string[];
   workspace?: PrepareWorkspaceSummary;
 }

@@ -370,6 +370,18 @@ test("api: project detail summarizes the latest prepare manifest and workspace q
         posture: "blind",
         scope_declaration: "First-party source and official docs only.",
         answer_firewall: "clean",
+        real_target: {
+          requires_confirmation: false,
+          mode: "source-only",
+          reason: "This fixture audits official source only; no deployed target is in scope.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: false,
+            allowed_network_actions: "none",
+            recommended_method: "Run local source-level checks only.",
+            not_required_reason: "No live deployment or published artifact is part of this prepared target.",
+          },
+        },
         components: [
           {
             id: "target",
@@ -413,6 +425,9 @@ test("api: project detail summarizes the latest prepare manifest and workspace q
     assert.equal("manifestPath" in detail.prepareSummary, false);
     assert.equal(detail.prepareSummary.manifestArtifact, "prepare_manifest.json");
     assert.deepEqual(detail.prepareSummary.workspace.sampleFiles, ["src/Target.sol"]);
+    assert.equal(detail.prepareSummary.realTarget.requiresConfirmation, false);
+    assert.equal(detail.prepareSummary.realTarget.mode, "source-only");
+    assert.equal(detail.prepareSummary.realTarget.guidance.required, false);
     assert.deepEqual(detail.prepareSummary.issues, []);
 
     const artifact = await fetch(base + `/api/runs/${detail.prepareSummary.runId}/artifact?name=prepare_manifest.json`);
@@ -475,6 +490,17 @@ test("api: unresolved prepare manifest status is surfaced as a review issue", as
         status: "in_progress",
         clue: "official source around a date",
         posture: "blind",
+        real_target: {
+          requires_confirmation: true,
+          mode: "deployed-contract",
+          reason: "The prepared target is expected to be confirmed against a deployed contract once deployment artifacts resolve.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: true,
+            allowed_network_actions: "read-and-local-fork",
+            recommended_method: "Resolve the deployed address and reproduce against a local fork.",
+          },
+        },
         components: [
           {
             id: "target",
@@ -524,6 +550,18 @@ test("api: blind prepare manifests get a clean answer-firewall fallback", async 
       JSON.stringify({
         status: "partial",
         posture: "blind",
+        real_target: {
+          requires_confirmation: false,
+          mode: "source-only",
+          reason: "Blind source-only fixture; no live target is part of scope.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: false,
+            allowed_network_actions: "none",
+            recommended_method: "Run local source-level checks only.",
+            not_required_reason: "No deployed target is in scope.",
+          },
+        },
         components: [
           {
             id: "source",
@@ -565,6 +603,18 @@ test("api: prepared workspace file count reports scan truncation", async () => {
         clue: "large official source",
         posture: "blind",
         answer_firewall: "clean",
+        real_target: {
+          requires_confirmation: false,
+          mode: "source-only",
+          reason: "Large source fixture; no deployed target is in scope.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: false,
+            allowed_network_actions: "none",
+            recommended_method: "Run local source-level checks only.",
+            not_required_reason: "No deployed target is in scope.",
+          },
+        },
         components: [{ id: "target", in_scope: true, origin: { url: "https://example.invalid/repo.git", commit: "abc123" }, deployment_match: { status: "n/a" } }],
       }),
     );
@@ -606,6 +656,17 @@ test("api: terminal prepare runs display stale in-progress manifests as partial"
         status: "in_progress",
         clue: "official source around a date",
         posture: "blind",
+        real_target: {
+          requires_confirmation: true,
+          mode: "deployed-contract",
+          reason: "Deployment artifacts are still unresolved, so later confirmation requires the real deployed target once resolved.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: true,
+            allowed_network_actions: "read-and-local-fork",
+            recommended_method: "Resolve the deployed address and reproduce against a local fork.",
+          },
+        },
         components: [
           {
             identity: "repo",
