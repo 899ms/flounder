@@ -148,7 +148,10 @@ const ROUTES: Route[] = [
   route({
     method: "GET", path: "/api/projects",
     summary: "List all projects with a live snapshot (scope coverage, finding counts, confirmed-bug count, latest run, active runs).",
-    handler: (c) => sendJson(c.res, 200, { projects: projectSnapshots(c.store) }),
+    handler: async (c) => {
+      await reconcileAllStaleAuditingScopes(c);
+      sendJson(c.res, 200, { projects: projectSnapshots(c.store) });
+    },
   }),
   route({
     method: "POST", path: "/api/projects",
@@ -643,6 +646,40 @@ function withProject(c: Ctx, fn: (projectId: number, project: Record<string, unk
   fn(Number(project.id), project);
 }
 
+async function withProjectAsync(c: Ctx, fn: (projectId: number, project: Record<string, unknown>) => Promise<void>): Promise<void> {
+  const uuid = c.params.uuid ?? "";
+  const project = c.store.getProjectByRef(uuid);
+  if (!project) {
+    sendJson(c.res, 404, { error: `no project with uuid ${uuid}` });
+    return;
+  }
+  await fn(Number(project.id), project);
+}
+
+async function reconcileAllStaleAuditingScopes(c: Ctx): Promise<void> {
+  for (const project of c.store.listProjects()) await reconcileStaleAuditingScopes(c, project);
+}
+
+async function reconcileStaleAuditingScopes(c: Ctx, project: Record<string, unknown>): Promise<void> {
+  const projectName = String(project.name ?? "");
+  const hasInFlightJob = c.store.runningJobs().some((job) => String(job.project ?? "") === projectName);
+  if (hasInFlightJob) return;
+
+  const projectId = Number(project.id);
+  if (!Number.isFinite(projectId)) return;
+  c.store.resetAuditingScopes(projectId);
+
+  const inventoryDir = projectHistoryDir({ outputDir: c.out, targetName: projectName });
+  const inventory = await loadScopeInventory(inventoryDir);
+  let changed = false;
+  for (const scope of inventory) {
+    if (scope.status !== "auditing") continue;
+    scope.status = "pending";
+    changed = true;
+  }
+  if (changed) await saveScopeInventory(inventoryDir, inventory);
+}
+
 // The editable project fields shared by create + update (materials are relative paths now;
 // providerId selects a profile; dir is the subdir under the daemon workspace).
 interface ProjectBody {
@@ -676,8 +713,9 @@ async function projectCreate(c: Ctx): Promise<void> {
   sendJson(c.res, 200, { ok: true, id, uuid: project?.uuid, name });
 }
 
-function projectGet(c: Ctx): void {
-  withProject(c, (id, project) => {
+async function projectGet(c: Ctx): Promise<void> {
+  await withProjectAsync(c, async (id, project) => {
+    await reconcileStaleAuditingScopes(c, project);
     const runs = runApiRows(c.store, c.store.listRuns(id, 50));
     const storedProgress = c.store.scopeProgress(id);
     const storedScopes = c.store.queryScopes(id, { limit: 50, offset: 0 });
@@ -724,8 +762,9 @@ function runApiRow(store: MetadataStore, run: Record<string, unknown>): Record<s
   };
 }
 
-function projectScopesGet(c: Ctx): void {
-  withProject(c, (id) => {
+async function projectScopesGet(c: Ctx): Promise<void> {
+  await withProjectAsync(c, async (id, project) => {
+    await reconcileStaleAuditingScopes(c, project);
     const limit = clampInt(c.url.searchParams.get("limit"), 50, 1, 500);
     const offset = clampInt(c.url.searchParams.get("offset"), 0, 0, 1_000_000);
     const total = c.store.countScopes(id);

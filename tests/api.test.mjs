@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { startUiServer } from "../dist/server/app.js";
 import { MetadataStore } from "../dist/db/store.js";
+import { loadScopeInventory, saveScopeInventory } from "../dist/agent/scope-store.js";
+import { projectHistoryDir } from "../dist/trace/history.js";
 
 // The whole workflow is a REST API an agent can self-learn (GET /api) and drive without
 // the UI. This pins the catalog + a project CRUD round-trip over real HTTP.
@@ -615,6 +617,63 @@ test("api: scope prioritize moves a mapped scope to the top of the queue", async
     scopes = await json(await fetch(base + `/api/projects/${created.uuid}/scopes`));
     assert.deepEqual(scopes.scopes.map((scope) => scope.scope_id), ["low", "high"]);
     assert.ok(scopes.scopes[0].priority > scopes.scopes[1].priority);
+  });
+});
+
+test("api: stale auditing scopes recover when no job is active", async () => {
+  await withServer(async (base, out) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    const created = await json(await post("/api/projects", { name: "scope-stale", sourcePaths: ["./src"] }));
+    const inventoryDir = projectHistoryDir({ outputDir: out, targetName: created.name });
+    await saveScopeInventory(inventoryDir, [
+      { id: "stale", title: "Stale scope", region: "src/Stale.sol", obligation: "Recover interrupted scope.", status: "auditing", score: 10 },
+      { id: "queued", title: "Queued scope", region: "src/Queued.sol", obligation: "Stay pending.", status: "pending", score: 9 },
+    ]);
+
+    const store = MetadataStore.openForOutput(out);
+    try {
+      store.upsertScopes(created.id, [
+        { scopeId: "stale", title: "Stale scope", status: "auditing", score: 10 },
+        { scopeId: "queued", title: "Queued scope", status: "pending", score: 9 },
+      ]);
+    } finally {
+      store.close();
+    }
+
+    const scopes = await json(await fetch(base + `/api/projects/${created.uuid}/scopes`));
+    assert.deepEqual(scopes.scopes.map((scope) => [scope.scope_id, scope.status]), [["stale", "pending"], ["queued", "pending"]]);
+
+    const inventory = await loadScopeInventory(inventoryDir);
+    assert.deepEqual(inventory.map((scope) => [scope.id, scope.status]), [["stale", "pending"], ["queued", "pending"]]);
+  });
+});
+
+test("api: active jobs keep auditing scopes in flight", async () => {
+  await withServer(async (base, out) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    const created = await json(await post("/api/projects", { name: "scope-active", sourcePaths: ["./src"] }));
+    const inventoryDir = projectHistoryDir({ outputDir: out, targetName: created.name });
+    await saveScopeInventory(inventoryDir, [
+      { id: "live", title: "Live scope", region: "src/Live.sol", obligation: "Remain in flight.", status: "auditing", score: 10 },
+    ]);
+
+    const store = MetadataStore.openForOutput(out);
+    try {
+      store.upsertScopes(created.id, [{ scopeId: "live", title: "Live scope", status: "auditing", score: 10 }]);
+      store.enqueueJob(created.name, { verb: "audit" });
+    } finally {
+      store.close();
+    }
+
+    const scopes = await json(await fetch(base + `/api/projects/${created.uuid}/scopes`));
+    assert.deepEqual(scopes.scopes.map((scope) => [scope.scope_id, scope.status]), [["live", "auditing"]]);
+
+    const inventory = await loadScopeInventory(inventoryDir);
+    assert.deepEqual(inventory.map((scope) => [scope.id, scope.status]), [["live", "auditing"]]);
   });
 });
 

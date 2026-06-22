@@ -656,6 +656,14 @@ export class MetadataStore {
     return Number(info.changes);
   }
 
+  /** Recover scopes left in-flight by a killed daemon or interrupted server process. */
+  resetAuditingScopes(projectId: number): number {
+    const info = this.db
+      .prepare("UPDATE scope SET status = 'pending', updated_at = ? WHERE project_id = ? AND status = 'auditing'")
+      .run(now(), projectId);
+    return Number(info.changes);
+  }
+
   /** Hand-order the dig queue: bump a scope's PRIORITY one above the project's current max so the
    * dig (which orders by priority then score) audits it next. Leaves the map's score untouched —
    * priority is a separate manual-ordering axis. Returns true if the scope exists. */
