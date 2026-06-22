@@ -1605,6 +1605,34 @@ test("api: run log supports a bounded JSON tail for agents", async () => {
   });
 });
 
+test("api: active jobs recover last activity from persisted run logs", async () => {
+  await withServer(async (base, out) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const created = await json(await post("/api/projects", { name: "active-persisted-activity", sourcePaths: ["./src"] }));
+    const runDir = path.join(out, "active-persisted-activity-run");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(
+      path.join(runDir, "events.jsonl"),
+      `${JSON.stringify({ ts: "2026-06-22T23:13:40.395Z", kind: "audit_action", detail: "persisted after server restart" })}\n`,
+    );
+
+    const store = MetadataStore.openForOutput(out);
+    try {
+      const jobId = store.enqueueJob(created.name, { verb: "prepare" });
+      const runId = store.startRun({ projectId: created.id, kind: "prepare", runDir });
+      store.setJobRun(jobId, runId);
+    } finally {
+      store.close();
+    }
+
+    const active = await json(await fetch(base + "/api/active"));
+    const row = active.active.find((entry) => entry.target === created.name);
+    assert.equal(row.lastActivityAt, "2026-06-22T23:13:40.395Z");
+    assert.ok(row.updatedAt >= row.lastActivityAt);
+  });
+});
+
 test("api: run rows include job error summaries", async () => {
   await withServer(async (base, out) => {
     const json = (r) => r.json();

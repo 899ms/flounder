@@ -2435,7 +2435,7 @@ function activeRuns(store: MetadataStore, plane?: ControlPlane): Array<Record<st
     const daemonId = typeof job.daemon_id === "number" ? job.daemon_id : undefined;
     const onlineDaemons = daemonId !== undefined && plane ? plane.daemonCount(daemonId) : undefined;
     const blockedReason = daemonId !== undefined && onlineDaemons === 0 ? "selected-daemon-offline" : undefined;
-    const lastActivityAt = typeof job.run_id === "number" && plane ? plane.lastActivityAt(Number(job.run_id)) : undefined;
+    const lastActivityAt = typeof job.run_id === "number" ? latestRunActivityAt(store, plane, Number(job.run_id)) : undefined;
     const updatedAt = maxIsoTimestamp(String(job.updated_at ?? ""), lastActivityAt);
     return {
       jobId: job.id,
@@ -2451,6 +2451,13 @@ function activeRuns(store: MetadataStore, plane?: ControlPlane): Array<Record<st
       ...(blockedReason ? { blockedReason } : {}),
     };
   });
+}
+
+function latestRunActivityAt(store: MetadataStore, plane: ControlPlane | undefined, runId: number): string | undefined {
+  const live = plane?.lastActivityAt(runId);
+  const run = store.getRun(runId);
+  const persisted = run ? persistedRunActivity(run, 1)[0]?.ts : undefined;
+  return maxIsoTimestamp(live, typeof persisted === "string" ? persisted : undefined);
 }
 
 function maxIsoTimestamp(...values: Array<string | undefined>): string | undefined {
