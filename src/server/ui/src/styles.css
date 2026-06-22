@@ -396,35 +396,6 @@ select {
   gap: 8px;
 }
 
-.project-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--fg-subtle);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg-subtle) 12%, transparent);
-  flex: 0 0 auto;
-}
-
-.project-dot.running {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
-}
-
-.project-dot.done {
-  background: var(--success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 13%, transparent);
-}
-
-.project-dot.partial {
-  background: var(--warning);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 14%, transparent);
-}
-
-.project-dot.error {
-  background: var(--danger);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 13%, transparent);
-}
-
 .project-name {
   flex: 1;
   min-width: 0;
@@ -433,6 +404,39 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-status-icon {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  background: var(--canvas-inset);
+  border: 1px solid transparent;
+}
+
+.project-status-icon.running {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.project-status-icon.done {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+}
+
+.project-status-icon.partial {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 13%, transparent);
+}
+
+.project-status-icon.error,
+.project-status-icon.killed {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .project-progress {
@@ -734,6 +738,12 @@ small {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
 }
 
+.phase-state.running .octicon,
+.project-status-icon.running .octicon {
+  animation: status-spin 0.9s linear infinite;
+  transform-origin: 50% 50%;
+}
+
 .phase-state.done,
 .phase-state.ready {
   color: var(--success);
@@ -751,6 +761,19 @@ small {
 .phase-state.killed {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phase-state.running .octicon,
+  .project-status-icon.running .octicon {
+    animation: none;
+  }
 }
 
 .phase strong {

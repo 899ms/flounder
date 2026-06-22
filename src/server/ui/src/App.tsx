@@ -375,15 +375,6 @@ function projectBadgeStatus(project: ProjectSnapshot): string | null | undefined
   return latest ?? (total > 0 ? "done" : undefined);
 }
 
-function projectDotStatus(project: ProjectSnapshot): string {
-  const status = projectBadgeStatus(project);
-  if (status === "running") return "running";
-  if (status === "error" || status === "killed") return "error";
-  if (status === "partial") return "partial";
-  if (status === "done") return "done";
-  return "none";
-}
-
 function phaseLabel(phase: ProjectPhase): string {
   return {
     prepare: "Prepare",
@@ -423,10 +414,30 @@ function phaseStatusLabel(status: string): string {
 
 function phaseStatusIcon(status: string): IconName {
   if (status === "done" || status === "ready") return "shieldcheck";
-  if (status === "running") return "play";
-  if (status === "pending" || status === "partial") return "kebab";
+  if (status === "running") return "sync";
+  if (status === "pending" || status === "partial") return "clock";
   if (status === "error" || status === "killed") return "x";
-  return "kebab";
+  return "clock";
+}
+
+function projectStatusTitle(project: ProjectSnapshot): string {
+  const status = projectBadgeStatus(project);
+  const label = phaseStatusLabel(status ?? "none");
+  if (status === "running") return `${label}: a run is active for this project.`;
+  if (status === "partial") return `${label}: coverage, verification, or confirmation work remains.`;
+  if (status === "done") return `${label}: no active run and current workflow has completed.`;
+  if (status === "error") return `${label}: the latest run failed.`;
+  if (status === "killed") return `${label}: the latest run was stopped.`;
+  return "No runs yet.";
+}
+
+function projectStatusIcon(project: ProjectSnapshot): IconName {
+  const status = projectBadgeStatus(project);
+  if (status === "running") return "sync";
+  if (status === "done") return "shieldcheck";
+  if (status === "partial") return "clock";
+  if (status === "error" || status === "killed") return "x";
+  return "clock";
 }
 
 function runKindLabel(kind: string, run?: RunRow): string {
@@ -1501,9 +1512,8 @@ function ProjectSidebar({ projects, selected, onSelect, onNew }: { projects: Pro
               onClick={() => onSelect(project.uuid)}
             >
               <span className="project-row-top">
-                <span className={`project-dot ${projectDotStatus(project)}`} aria-hidden="true" />
                 <span className="project-name">{shortName(project.name, 31)}</span>
-                <StateBadge status={projectBadgeStatus(project)} />
+                <ProjectStatusIcon project={project} />
               </span>
               <ProjectProgress project={project} />
             </button>
@@ -1511,6 +1521,15 @@ function ProjectSidebar({ projects, selected, onSelect, onNew }: { projects: Pro
         ))}
       </ul>
     </aside>
+  );
+}
+
+function ProjectStatusIcon({ project }: { project: ProjectSnapshot }) {
+  const status = projectBadgeStatus(project) ?? "none";
+  return (
+    <span className={`project-status-icon ${status}`} role="img" title={projectStatusTitle(project)} aria-label={projectStatusTitle(project)}>
+      <Icon name={projectStatusIcon(project)} size={13} />
+    </span>
   );
 }
 
