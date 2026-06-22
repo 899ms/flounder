@@ -1427,12 +1427,14 @@ function ProjectDetailView(props: {
   const selectedDaemonOnline = selectedDaemon ? daemonHealth(selectedDaemon) === "online" : false;
   const online = selectedDaemonOnline ? [selectedDaemon] : [];
   const phases = phaseState(detail, detail.progress);
-  const candidates = topCandidateFindings(detail.allFindings);
+  const topCandidates = topCandidateFindings(detail.allFindings);
+  const verifyCandidates = pendingVerifyFindings(detail.allFindings);
+  const overviewCandidates = verifyCandidates.length ? verifyCandidates : topCandidates;
   const confirmed = totalConfirmed(project);
   const reproduced = confirmedDecisions(detail.confirmDecisions).length;
   const runningRun = detail.runs.find((run) => run.status === "running");
   const pendingConfirm = pendingConfirmFindings(detail.allFindings).length;
-  const pendingVerify = pendingVerifyFindings(detail.allFindings).length;
+  const pendingVerify = verifyCandidates.length;
   const localVerifySummary = verifyStatusSummary(detail.allFindings);
   const setupAttention = prepareMaterialsAttention(detail.prepareSummary);
   const launchLocked = props.busy || Boolean(runningRun);
@@ -1576,7 +1578,7 @@ function ProjectDetailView(props: {
         <div className="stats">
           <Stat n={detail.progress.total} label="scopes" onClick={() => setTab("scopes")} />
           <Stat n={detail.findingsTotal} label="findings" onClick={() => { props.setFindingStatus(""); props.setFindingQuery(""); setTab("findings"); }} />
-          <Stat n={candidates.length} label="top candidates" onClick={() => { props.setFindingStatus(""); props.setFindingQuery(""); setTab("overview"); scrollToProjectSection("project-top-candidates"); }} />
+          <Stat n={overviewCandidates.length} label={pendingVerify ? "to verify" : "top candidates"} onClick={() => { props.setFindingStatus(""); props.setFindingQuery(""); setTab("overview"); scrollToProjectSection("project-top-candidates"); }} />
           <Stat n={confirmed} label="confirmed" good onClick={() => { props.setFindingStatus("execution-confirmed"); props.setFindingQuery(""); setTab("findings"); }} />
           <Stat n={reproduced} label="reproduced" onClick={() => setTab("overview")} />
           <Stat n={detail.runsTotal} label="runs" onClick={() => setTab("runs")} />
@@ -1598,7 +1600,7 @@ function ProjectDetailView(props: {
           </button>
         ))}
       </div>
-      {tab === "overview" ? <ProjectOverview detail={detail} candidates={candidates} verifyCount={pendingVerify} verifyLocked={launchLocked || pendingVerify === 0} onVerifyCandidates={() => props.onLaunch("verify")} onOpenReport={props.onOpenReport} /> : null}
+      {tab === "overview" ? <ProjectOverview detail={detail} candidates={overviewCandidates} verifyCount={pendingVerify} verifyLocked={launchLocked || pendingVerify === 0} onVerifyCandidates={() => props.onLaunch("verify")} onOpenReport={props.onOpenReport} /> : null}
       {tab === "findings" ? (
         <ProjectFindings
           detail={detail}
@@ -1692,6 +1694,8 @@ function ProjectOverview({
   const runningRun = detail.runs.find((run) => run.status === "running");
   const pendingConfirm = pendingConfirmFindings(detail.allFindings).length;
   const sourceConfirmed = detail.statusCounts["confirmed-source"] ?? 0;
+  const suspectedLeads = detail.statusCounts.suspected ?? 0;
+  const unverifiedLeads = sourceConfirmed + suspectedLeads;
   const decisions = detail.confirmDecisions.length;
   const reproduced = confirmedDecisions(detail.confirmDecisions).length;
   const progress = detail.progress;
@@ -1705,7 +1709,7 @@ function ProjectOverview({
   const synthesis = runStages(latestRunWithStage(detail, "synthesis")).synthesis;
   const verifyValue = verifyCount ? plural(verifyCount, "candidate") : pendingConfirm ? "Ready for confirm" : "No candidates";
   const verifyDetail = verifyCount
-    ? `${plural(sourceConfirmed, "source-confirmed lead")} · ${plural((detail.statusCounts.suspected ?? 0), "suspected lead")} still need execution verification`
+    ? `${plural(verifyCount, "prioritized candidate")} selected from ${plural(unverifiedLeads, "unverified lead")}`
     : pendingConfirm
       ? "Execution-confirmed findings can move to real-target confirmation."
       : "Synthesis and dig outputs appear as candidates here.";
@@ -1724,21 +1728,31 @@ function ProjectOverview({
     : decisions
       ? `${reproduced}/${decisions} confirm decisions reproduced`
       : "Available after an audit-confirmed finding exists";
+  const candidateTitle = verifyCount ? "Candidates to verify" : "Most suspicious bugs";
+  const candidateSummary = verifyCount
+    ? `${verifyCount} prioritized ${verifyCount === 1 ? "candidate needs" : "candidates need"} verification`
+    : "No candidate waiting for execution verification";
+  const candidateDetail = verifyCount
+    ? "These suspected or source-confirmed findings are the next local verification worklist."
+    : "Highest-ranked dig and synthesis outputs are shown here after local verification.";
+  const candidateEmpty = verifyCount
+    ? "Unverified candidates appear here after dig or synthesis."
+    : "Ranked findings appear here after dig audits mapped scopes.";
   return (
     <>
       {runningRun ? <LiveActivityPanel run={runningRun} /> : null}
       <div id="project-top-candidates" className="section-anchor">
-        <Card title={<span>Most suspicious bugs <Counter>{candidates.length}</Counter></span>}>
+        <Card title={<span>{candidateTitle} <Counter>{candidates.length}</Counter></span>}>
           <div className="candidate-head">
             <div>
-              <strong>{verifyCount ? `${verifyCount} unresolved ${verifyCount === 1 ? "candidate needs" : "candidates need"} verification` : "No candidate waiting for execution verification"}</strong>
-              <small>Dig results and synthesis outputs are ranked here before real-target confirmation.</small>
+              <strong>{candidateSummary}</strong>
+              <small>{candidateDetail}</small>
             </div>
             <Button size="sm" icon="search" disabled={verifyLocked} title={verifyButtonTitle(verifyCount)} aria-label={verifyButtonTitle(verifyCount)} onClick={onVerifyCandidates}>
               {verifyButtonLabel(verifyCount)}
             </Button>
           </div>
-          <FindingList findings={candidates} compact empty="Candidate findings appear here after dig audits mapped scopes and a claim survives local confirmation." onOpenReport={onOpenReport} />
+          <FindingList findings={candidates} compact empty={candidateEmpty} onOpenReport={onOpenReport} />
         </Card>
       </div>
       <Card title="Audit status">
