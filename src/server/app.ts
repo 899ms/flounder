@@ -57,10 +57,9 @@ class ControlPlane {
     this.daemons.delete(res);
   }
   daemonCount(daemonId?: number): number {
-    if (daemonId === undefined) return this.daemons.size;
-    let count = 0;
-    for (const id of this.daemons.values()) if (id === daemonId) count++;
-    return count;
+    const ids = new Set(this.daemons.values());
+    if (daemonId === undefined) return ids.size;
+    return ids.has(daemonId) ? 1 : 0;
   }
   hasDaemon(daemonId: number): boolean {
     return this.daemonCount(daemonId) > 0;

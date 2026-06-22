@@ -234,6 +234,30 @@ test("daemon: activity POSTs surface on the run's live SSE log", async () => {
   });
 });
 
+test("daemon: active job counts connected daemon identities, not stream connections", async () => {
+  await withServerAndToken(async ({ base, token }) => {
+    const reg = await j(await asDaemon(base, token, "POST", "/api/daemon/register", { name: "d1" }));
+    const first = new AbortController();
+    const second = new AbortController();
+    const openStream = (signal) => fetch(base + "/api/daemon/stream", { headers: { authorization: `Bearer ${token}` }, signal });
+    const streams = await Promise.all([openStream(first.signal), openStream(second.signal)]);
+    try {
+      assert.equal(streams.every((res) => res.ok), true);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const created = await j(await ui(base, "POST", "/api/projects", { name: "deduped-daemon", daemonId: reg.daemonId, sourcePaths: ["./src"] }));
+      const { jobId } = await j(await ui(base, "POST", `/api/projects/${created.uuid}/runs`, { verb: "run", mockLlm: true }));
+      const active = await j(await ui(base, "GET", "/api/active"));
+      const row = active.active.find((item) => item.jobId === jobId);
+      assert.ok(row);
+      assert.equal(row.onlineDaemons, 1);
+    } finally {
+      first.abort();
+      second.abort();
+      await Promise.allSettled(streams.map((res) => res.body?.cancel()));
+    }
+  });
+});
+
 test("daemon: JSON run log compacts token deltas for history views", async () => {
   await withServerAndToken(async ({ base, token }) => {
     await asDaemon(base, token, "POST", "/api/daemon/register", { name: "d1" });
