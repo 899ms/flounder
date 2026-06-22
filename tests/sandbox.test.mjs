@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { defaultConfig, sandboxExecutionOptions, sandboxNetworkForPurpose } from "../dist/config.js";
-import { runSandboxCommand } from "../dist/security/sandbox.js";
+import { runSandboxCommand, sandboxToolPath } from "../dist/security/sandbox.js";
 
 async function tempDir(prefix) {
   return mkdtemp(path.join(os.tmpdir(), prefix));
@@ -85,6 +85,14 @@ test("sandbox host backend is explicit and still uses isolated HOME and caches",
     await rm(workspace, { recursive: true, force: true });
     await rm(cache, { recursive: true, force: true });
   }
+});
+
+test("sandbox PATH includes common host toolchain directories", () => {
+  const toolPath = sandboxToolPath("/usr/bin");
+  const parts = toolPath.split(path.delimiter);
+  assert.ok(parts.includes("/usr/bin"));
+  assert.ok(parts.includes("/opt/homebrew/bin"));
+  assert.ok(parts.includes("/usr/local/bin"));
 });
 
 test("sandbox host backend requires the allow-host-execution opt-in", async () => {

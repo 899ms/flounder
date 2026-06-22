@@ -7,6 +7,7 @@ RUN apt-get update \
     bash \
     build-essential \
     ca-certificates \
+    cmake \
     cargo \
     coreutils \
     curl \
@@ -18,6 +19,7 @@ RUN apt-get update \
     jq \
     nodejs \
     npm \
+    ninja-build \
     pkg-config \
     python3 \
     python3-pip \

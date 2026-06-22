@@ -497,10 +497,27 @@ function sandboxEnv(workspace: string, tmpDir: string, cacheDir?: string): NodeJ
     GOMODCACHE: path.join(pkgCache, "go-mod-cache"),
     NPM_CONFIG_CACHE: path.join(pkgCache, "npm-cache"),
   };
-  if (process.env.PATH !== undefined) out.PATH = process.env.PATH;
+  out.PATH = sandboxToolPath(process.env.PATH);
   if (process.env.LANG !== undefined) out.LANG = process.env.LANG;
   if (process.env.LC_ALL !== undefined) out.LC_ALL = process.env.LC_ALL;
   return out;
+}
+
+export function sandboxToolPath(basePath: string | undefined = process.env.PATH): string {
+  const parts = (basePath ?? "").split(path.delimiter).filter(Boolean);
+  for (const dir of [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ]) {
+    if (!parts.includes(dir)) parts.push(dir);
+  }
+  return parts.join(path.delimiter);
 }
 
 export function isLocalUrl(input: string): boolean {
