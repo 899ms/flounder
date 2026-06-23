@@ -283,7 +283,7 @@ export function configSnapshot(cfg: AuditorConfig): Record<string, unknown> {
     maxSteps: finite(cfg.auditMaxSteps),
     mapSteps: finite(cfg.auditMapSteps),
     digSteps: finite(cfg.auditDigSteps),
-    maxScopes: cfg.auditMaxScopes,
+    maxScopes: finite(cfg.auditMaxScopes),
     digSamples: cfg.auditDigSamples,
     digConcurrency: cfg.auditDigConcurrency,
   };

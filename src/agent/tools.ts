@@ -323,7 +323,7 @@ const editTool: AgentTool = {
 const bashTool: AgentTool = {
   name: "bash",
   description:
-    'Run one local command in the copied sandbox workspace. args: {"cmd": string, "purpose"?: "inspect"|"build"|"confirm" (default inspect), "cwd"?: relative, "expected_exit_code"?: int, "success_patterns"?: [string], "timeout_ms"?: int}. Shell control operators, remote networks, destructive commands, and paths outside the workspace are blocked. purpose=inspect is for exploration (ls/find/rg/cat/sed/jq), tool availability checks (which nargo), and local JSON reads (python -m json.tool file); it never confirms anything. purpose=build is for dependency resolution and compilation (cargo build/fetch, cmake -S/-B/--build, ninja, make, npm install, go mod download, forge build, pip install, …) to make the workspace buildable; it has side effects but is NOT confirmation-eligible. For CMake, prefer generator-neutral `cmake -S <src> -B <build>` then `cmake --build <build> --parallel 2` on large targets; pass `-G Ninja` only after `ninja --version` succeeds, and keep parallelism bounded. purpose=confirm must be a real local test runner (cargo test, ctest, forge test, go test, node --test, pytest, …) with success_patterns; only a confirm command that exits as expected, observes every success_pattern, and executes a test linked to pristine target source becomes confirmation-eligible and citable as command_id for confirmed-executable.',
+    'Run one local command in the copied sandbox workspace. args: {"cmd": string, "purpose"?: "inspect"|"build"|"confirm" (default inspect), "cwd"?: relative, "expected_exit_code"?: int, "success_patterns"?: [string], "timeout_ms"?: int}. Shell control operators, remote networks, destructive commands, and paths outside the workspace are blocked. purpose=inspect is for exploration (ls/find/rg/cat/sed/jq), tool availability checks (which nargo), and local JSON reads (jq . file or jq length file); it never confirms anything. purpose=build is for dependency resolution and compilation (cargo build/fetch, cmake -S/-B/--build, ninja, make, npm install, go mod download, forge build, pip install, …) to make the workspace buildable; it has side effects but is NOT confirmation-eligible. For CMake, prefer generator-neutral `cmake -S <src> -B <build>` then `cmake --build <build> --parallel 2` on large targets; pass `-G Ninja` only after `ninja --version` succeeds, and keep parallelism bounded. purpose=confirm must be a real local test runner (cargo test, ctest, forge test, go test, node --test, pytest, …) with success_patterns; only a confirm command that exits as expected, observes every success_pattern, and executes a test linked to pristine target source becomes confirmation-eligible and citable as command_id for confirmed-executable.',
   async run(args, ctx) {
     const normalized = normalizeBashCommand(args, ctx.cfg);
     if ("error" in normalized) return { observation: normalized.error };
@@ -720,7 +720,8 @@ export function readScratchScopes(session: AgentSession): AuditScope[] {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const r = item as Record<string, unknown>;
     const region = asString(r.region) ?? asString(r.location);
-    const obligation = asString(r.obligation) ?? asString(r.title);
+    const title = asString(r.title) ?? asString(r.scope) ?? asString(r.name);
+    const obligation = asString(r.obligation) ?? composeScopeObligation(r) ?? title;
     if (!region || !obligation) continue;
     const scoreNum = typeof r.score === "number" ? r.score : Number.parseFloat(asString(r.score) ?? "");
     scopes.push({
@@ -730,11 +731,33 @@ export function readScratchScopes(session: AgentSession): AuditScope[] {
       lenses: Array.isArray(r.lenses) ? r.lenses.filter((x): x is string => typeof x === "string") : [],
       exposure: asString(r.exposure) ?? "unknown",
       difficulty: asString(r.difficulty) ?? "unknown",
-      score: Number.isFinite(scoreNum) ? scoreNum : 0,
-      why: asString(r.why) ?? "",
+      score: Number.isFinite(scoreNum) ? scoreNum : scoreFromExposure(asString(r.exposure)),
+      why: asString(r.why) ?? asString(r.value) ?? "",
     });
   }
   return scopes.sort((a, b) => b.score - a.score);
+}
+
+function composeScopeObligation(row: Record<string, unknown>): string | undefined {
+  const spec = asString(row.spec);
+  const value = asString(row.value);
+  const inputs = asString(row.inputs);
+  if (!spec && !value && !inputs) return undefined;
+  return [
+    spec ? `Spec: ${spec}` : undefined,
+    value ? `Value at risk: ${value}` : undefined,
+    inputs ? `Inputs/trust boundary: ${inputs}` : undefined,
+  ].filter((part): part is string => Boolean(part)).join(" ");
+}
+
+function scoreFromExposure(exposure: string | undefined): number {
+  const value = (exposure ?? "").trim().toLowerCase();
+  if (value === "critical") return 10;
+  if (value === "high") return 8;
+  if (value === "medium" || value === "moderate") return 5;
+  if (value === "low") return 2;
+  if (value === "info" || value === "informational") return 1;
+  return 0;
 }
 
 // A satisfied-and-checked obligation; "DISCHARGED:" title -> discharged status (the model marks it).

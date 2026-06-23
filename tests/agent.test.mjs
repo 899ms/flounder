@@ -7,7 +7,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { defaultConfig, resolveRole, withRole, normalizeRoleModels } from "../dist/config.js";
 import { ProjectMemory } from "../dist/agent/memory.js";
-import { buildTools, describeAction, ingestFindingsFromScratch, newSession, dedupeFindings } from "../dist/agent/tools.js";
+import { buildTools, describeAction, ingestFindingsFromScratch, newSession, dedupeFindings, readScratchScopes } from "../dist/agent/tools.js";
 import { runAudit } from "../dist/agent/audit.js";
 import { normalizePrepareManifest, prepareValidationBlockingIssues, readPrepareManifest } from "../dist/agent/acquire.js";
 import { runAuditLoop, isTransientError } from "../dist/agent/loop.js";
@@ -105,6 +105,35 @@ test("map checkpoint guard blocks further exploration until scopes.json exists",
   assert.equal(mapCheckpointDirective(false, 12, "read", { path: "src/lib.rs" }, 0), undefined);
 });
 
+test("readScratchScopes accepts scope/spec/value/input map schema", () => {
+  const session = newSession();
+  session.scratchFiles.set("scopes.json", JSON.stringify([
+    {
+      id: "S-crit",
+      scope: "Verifier public input binding",
+      region: "src/Verifier.sol:1-90",
+      spec: "The proof input must bind the committed root.",
+      value: "Invalid proofs could release escrowed funds.",
+      inputs: "Proof bytes, public input, committed root.",
+      exposure: "critical",
+    },
+    {
+      id: "S-low",
+      scope: "Metrics endpoint",
+      region: "src/Metrics.ts:1-20",
+      spec: "Metrics must not affect state.",
+      exposure: "low",
+    },
+  ]));
+
+  const scopes = readScratchScopes(session);
+  assert.equal(scopes.length, 2);
+  assert.equal(scopes[0].id, "S-crit");
+  assert.equal(scopes[0].obligation, "Spec: The proof input must bind the committed root. Value at risk: Invalid proofs could release escrowed funds. Inputs/trust boundary: Proof bytes, public input, committed root.");
+  assert.equal(scopes[0].score, 10);
+  assert.equal(scopes[1].score, 2);
+});
+
 test("prepare checkpoint guard blocks optional work after source is staged but manifest components are empty", () => {
   const state = { hasManifest: true, componentCount: 0, hasStagedSource: true };
   const blocked = prepareCheckpointDirective("Clue: official source", 18, state, "bash", { cmd: "find sources -type f" });
@@ -134,6 +163,11 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
   const sessionPrompt = buildSessionPrompt({ cfg: defaultConfig(), fileManifest: "x.rs" });
   assert.ok(sessionPrompt.includes(POC_TRUST_RULE), "real pi session prompt is missing the shared PoC trust rule");
   assert.ok(sessionPrompt.includes('purpose="build"'), "real pi session prompt should expose build-purpose commands");
+  assert.ok(sessionPrompt.includes("jq . file or jq length file"), "real pi session prompt should recommend JSON inspection tools available in the sandbox image");
+  assert.ok(!sessionPrompt.includes("python -m json.tool"), "real pi session prompt should not suggest a missing python binary for JSON validation");
+  const bashDescription = buildTools().find((tool) => tool.name === "bash")?.description ?? "";
+  assert.ok(bashDescription.includes("jq . file or jq length file"), "bash tool description should recommend sandbox-available JSON inspection");
+  assert.ok(!bashDescription.includes("python -m json.tool"), "bash tool description should not suggest a missing python binary for JSON validation");
   assert.ok(sessionPrompt.includes("findings.json is not a work log"), "findings should not be used as an audit notebook");
   assert.ok(sessionPrompt.includes("Do NOT write safe/no-issue notes"), "session prompt should keep no-issue ledgers out of findings");
   assert.ok(JSON.stringify(toolSchemas.bash).includes('"build"'), "pi custom tool schema should allow purpose=build");
@@ -158,6 +192,16 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
   const deepPrompt = buildSessionPrompt({ cfg: defaultConfig(), fileManifest: "x.rs", deep: true });
   assert.ok(!deepPrompt.includes("Record every obligation and its status to findings.json"), "deep prompt should not put discharged obligations into findings");
   assert.ok(deepPrompt.includes("discharged obligations are not findings"), "deep prompt should keep safe obligation notes out of findings");
+  for (const prompt of [
+    mapPrompt,
+    deepPrompt,
+    buildSessionPrompt({ cfg: defaultConfig(), fileManifest: "x.rs", verify: "claim" }),
+  ]) {
+    assert.ok(prompt.includes("Target evidence boundary"), "audit prompts should define the target evidence boundary");
+    assert.ok(prompt.includes("no ~/.agents skills"), "audit prompts should block host agent skills as evidence");
+    assert.ok(prompt.includes("~/.codex memories"), "audit prompts should block host Codex memories as evidence");
+    assert.ok(prompt.includes("outside this audit workspace"), "audit prompts should block outside-workspace paths");
+  }
 
   const verifyPrompts = [
     AUDIT_VERIFY_SYSTEM,
@@ -198,6 +242,9 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
   assert.ok(preparePrompt.includes("Do NOT audit yet"), "prepare should not spend the acquisition phase hunting bugs");
   assert.ok(preparePrompt.includes("leave all bug discovery to map/dig"), "prepare should preserve the blind audit boundary");
   assert.ok(preparePrompt.includes("real_target"), "prepare should require a real-target confirmation plan");
+  assert.ok(preparePrompt.includes("host/outer-agent instructions"), "prepare should not use host agent instructions as target evidence");
+  assert.ok(preparePrompt.includes("~/.agents skills"), "pi prepare should explicitly avoid outer Codex skill files");
+  assert.ok(preparePrompt.includes("machine-local notes outside this prepare workspace"), "pi prepare should stay inside the prepared target evidence boundary");
   assert.ok(preparePrompt.includes("requires_confirmation"), "prepare should explicitly decide whether real-target confirmation is required");
   assert.ok(preparePrompt.includes("real_target.requires_confirmation=true"), "prepare should identify real-target confirmation mode");
   assert.ok(preparePrompt.includes("ground_truth must list"), "prepare should not leave real-target confirmation unresolved");

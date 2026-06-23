@@ -411,7 +411,13 @@ function writesPrepareManifestJson(args: Record<string, unknown>): boolean {
 
 const MAP_CHECKPOINT_TOOL_STEPS = 12;
 
-export function mapCheckpointDirective(map: boolean | undefined, step: number, toolName: string, args: Record<string, unknown>, scopeCount: number): CheckpointDirective | undefined {
+export function mapCheckpointDirective(
+  map: boolean | undefined,
+  step: number,
+  toolName: string,
+  args: Record<string, unknown>,
+  scopeCount: number,
+): CheckpointDirective | undefined {
   if (!map || scopeCount > 0 || step < MAP_CHECKPOINT_TOOL_STEPS) return undefined;
   const message = [
     "blocked: MAP CHECKPOINT REQUIRED.",
@@ -531,8 +537,13 @@ Trust boundaries (do not lose a real bug just because its proof lives outside th
 Use the provided tools to investigate:
 - read: read loaded source/corpus or files you create in the sandbox.
 - write / edit: create or modify your own test/scratch files inside the copied workspace. You CANNOT modify the target source under audit — write tests as new files; to show a fix, declare it in the finding's "fix" field and the framework applies it during confirmation.
-- bash: run one local command. Use purpose="inspect" to explore (ls/find/rg/cat/sed/jq), check tool availability (which nargo), and read local JSON (python -m json.tool file). Use purpose="build" for dependency resolution or compilation that makes the workspace buildable (cargo build, cmake -S/-B/--build, ninja, make, forge build, npm install, …); it is not confirmation-eligible. For CMake, prefer generator-neutral commands like cmake -S <src> -B <build> then cmake --build <build> --parallel 2 on large targets; pass -G Ninja only after ninja --version succeeds, and keep parallelism bounded. Use purpose="confirm" to PROVE a bug with a real local test runner (cargo test, ctest, forge test, go test, node --test, pytest, …) and declared success_patterns. A model-written standalone test that does not import pristine target source will run, but it cannot become confirmation-eligible.
+- bash: run one local command. Use purpose="inspect" to explore (ls/find/rg/cat/sed/jq), check tool availability (which nargo), and read local JSON (jq . file or jq length file). Use purpose="build" for dependency resolution or compilation that makes the workspace buildable (cargo build, cmake -S/-B/--build, ninja, make, forge build, npm install, …); it is not confirmation-eligible. For CMake, prefer generator-neutral commands like cmake -S <src> -B <build> then cmake --build <build> --parallel 2 on large targets; pass -G Ninja only after ninja --version succeeds, and keep parallelism bounded. Use purpose="confirm" to PROVE a bug with a real local test runner (cargo test, ctest, forge test, go test, node --test, pytest, …) and declared success_patterns. A model-written standalone test that does not import pristine target source will run, but it cannot become confirmation-eligible.
 ${reportingBlock}
+
+Target evidence boundary:
+- Resolve this audit only from the loaded source/corpus, files you create in this sandbox, and durable memory explicitly supplied below.
+- Do not inspect or rely on host or outer-agent context: no ~/.agents skills, ~/.codex memories, local AGENTS.md files, shell history, machine-local notes, or paths outside this audit workspace.
+- If a tool blocks an outside-workspace path, treat that as the intended boundary and continue with the loaded target materials.
 
 White-hat boundaries (non-negotiable):
 - Confirmation is local-only: unit tests, component tests, local regtest/devnet, or forked/fake nodes. purpose=build may fetch package-manager dependencies; purpose=confirm must not target a public testnet, mainnet, production, or any live network.
@@ -570,6 +581,8 @@ function buildPrepareSessionPrompt(input: { prepare: string; fileManifest: strin
 
 Your task for THIS run (clue + posture + match-mainnet constraint):
 ${input.prepare}
+
+Do not inspect host or outer-agent context to complete this task: no ~/.agents skills, ~/.codex memories, local AGENTS.md files, shell history, or machine-local notes outside this prepare workspace. Resolve the target only from the clue, official public target materials, and files you stage into the workspace.
 
 Workspace (initially empty — stage everything you fetch here; this directory becomes the audit's source):
 ${input.fileManifest}

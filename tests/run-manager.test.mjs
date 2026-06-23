@@ -129,6 +129,7 @@ test("specToConfig: posture per verb + unbounded budgets by default", () => {
   assert.equal(Number.isFinite(run.auditMaxSteps), false); // unbounded by default
   assert.equal(Number.isFinite(run.auditMapSteps), false);
   assert.equal(Number.isFinite(run.auditDigSteps), false);
+  assert.equal(Number.isFinite(run.auditMaxScopes), false);
 
   assert.equal(specToConfig({ ...base, verb: "run", quick: true }, "runs").auditDeep, false); // --quick = breadth
 

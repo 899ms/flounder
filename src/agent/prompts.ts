@@ -352,6 +352,7 @@ Posture (stated in your task seed):
 
 Hard rules (non-negotiable):
 - Access is READ-ONLY: read / fetch / clone / fork / search freely; NEVER perform a state-changing or value-moving action on any live system.
+- Target evidence only: use this run's prepare workspace plus the target project's official public source, deployment metadata, registry records, bounty/scope pages, and answer-free docs. Do NOT read or rely on host/outer-agent instructions, skills, memories, local AGENTS.md files, shell history, or other machine-local context outside the prepare workspace; those are not target evidence and contaminate the prepared scope.
 - Pin provenance for every staged component: what it is, where it came from, its revision/version/digest, and whether/how it was deployment-matched.
 - Pin the real-target confirmation requirement: prepare_manifest.json MUST include real_target.requires_confirmation plus either ground_truth entries or a not_required_reason.
 - Components are mandatory for staged code: every staged first-party repository, package, deployed contract/service, verifier/circuit set, and other source artifact that the sealed audit should read must have a components[] row with staged_path, revision/version/digest, in_scope, and match. Staged docs/specs may be recorded in components or offscope, but missing docs/specs are honest gaps rather than blockers. A nonempty workspace with an empty components array is not a usable prepare output.

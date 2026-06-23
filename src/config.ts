@@ -188,7 +188,7 @@ export function defaultConfig(): AuditorConfig {
     auditDeep: false,
     auditMapSteps: Number.POSITIVE_INFINITY,
     auditDigSteps: Number.POSITIVE_INFINITY,
-    auditMaxScopes: 30,
+    auditMaxScopes: Number.POSITIVE_INFINITY,
     auditDigSamples: 1,
     auditDigConcurrency: 1,
     auditRemap: false,

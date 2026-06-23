@@ -171,7 +171,7 @@ const ROUTES: Route[] = [
       sourcePaths: "string[] — code paths relative to dir",
       buildRoot: "string? — buildable root relative to dir",
       corpusPaths: "string[]? — specs/docs relative to dir",
-      config: "object? — { prepareClue, projectIntent, phaseProviders, scopeCoverageMode, maxScopes, mapSteps, digSteps, digSamples, digConcurrency, sandbox... }. Default coverage is cumulative: Standard audits until 30 project scopes are done, not 30 extra scopes per launch.",
+      config: "object? — { prepareClue, projectIntent, phaseProviders, scopeCoverageMode, maxScopes, mapSteps, digSteps, digSamples, digConcurrency, sandbox... }. Default coverage is full pending coverage; Standard is an explicit cumulative mode that audits until 30 project scopes are done.",
     },
     handler: projectCreate,
   }),
@@ -1087,17 +1087,41 @@ function scopeCheckpointRow(entry: unknown, index: number): Record<string, unkno
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const scope = entry as Record<string, unknown>;
   const scopeId = stringValue(scope.scope_id ?? scope.id) || `checkpoint-${index + 1}`;
+  const title = stringValue(scope.title ?? scope.obligation ?? scope.scope ?? scope.name) || scopeId;
+  const obligation = stringValue(scope.obligation) || composeCheckpointObligation(scope) || title;
   const status = stringValue(scope.status) || "pending";
   return {
     scope_id: scopeId,
-    title: stringValue(scope.title ?? scope.obligation) || scopeId,
+    title,
     location: stringValue(scope.location ?? scope.region),
-    obligation: stringValue(scope.obligation ?? scope.title) || scopeId,
+    obligation,
     region: stringValue(scope.region ?? scope.location),
-    score: numericValue(scope.score),
+    score: numericValue(scope.score) ?? scoreFromCheckpointExposure(scope.exposure),
     priority: numericValue(scope.priority),
     status,
   };
+}
+
+function composeCheckpointObligation(scope: Record<string, unknown>): string | undefined {
+  const spec = stringValue(scope.spec);
+  const value = stringValue(scope.value);
+  const inputs = stringValue(scope.inputs);
+  if (!spec && !value && !inputs) return undefined;
+  return [
+    spec ? `Spec: ${spec}` : undefined,
+    value ? `Value at risk: ${value}` : undefined,
+    inputs ? `Inputs/trust boundary: ${inputs}` : undefined,
+  ].filter((part): part is string => Boolean(part)).join(" ");
+}
+
+function scoreFromCheckpointExposure(exposure: unknown): number | null {
+  const value = stringValue(exposure).toLowerCase();
+  if (value === "critical") return 10;
+  if (value === "high") return 8;
+  if (value === "medium" || value === "moderate") return 5;
+  if (value === "low") return 2;
+  if (value === "info" || value === "informational") return 1;
+  return null;
 }
 
 function checkpointScopeView(
@@ -3266,7 +3290,7 @@ function resolveCoverage(cfg: Record<string, unknown>, progress?: Coverage, expl
   if (mode === "focused") return { mode, target: 10, maxScopes: cumulativeCoverageLimit(10, progress) };
   if (mode === "standard") return { mode, target: 30, maxScopes: cumulativeCoverageLimit(30, progress) };
   if (mode === "half") return { mode, maxScopes: total > 0 ? Math.max(0, Math.ceil(pending / 2)) : 30 };
-  if (mode === "full") return { mode, maxScopes: total > 0 ? pending : 1_000_000 };
+  if (mode === "full") return { mode, maxScopes: total > 0 ? pending : undefined };
   if (mode === "custom") return { mode, maxScopes: explicit };
   return { mode, maxScopes: explicit };
 }
@@ -3274,7 +3298,8 @@ function resolveCoverage(cfg: Record<string, unknown>, progress?: Coverage, expl
 function normalizeCoverageMode(input: unknown, explicit?: number): CoverageMode {
   if (input === "focused" || input === "standard" || input === "half" || input === "full" || input === "custom") return input;
   if (explicit === 10) return "focused";
-  if (explicit === undefined || explicit === 30) return "standard";
+  if (explicit === 30) return "standard";
+  if (explicit === undefined) return "full";
   return "custom";
 }
 

@@ -121,12 +121,36 @@ test("api: project list supports archive, unarchive, pin, and manual order", asy
   });
 });
 
-test("api: project run defaults leave map/dig turns unbounded while standard coverage caps the batch", async () => {
+test("api: project run defaults leave map/dig turns and scope selection unbounded", async () => {
   await withServer(async (base) => {
     const json = (r) => r.json();
     const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const created = await json(await post("/api/projects", {
       name: "default-run-budget",
+      sourcePaths: ["./src"],
+    }));
+
+    const launched = await json(await post(`/api/projects/${created.uuid}/runs`, { verb: "run" }));
+    assert.equal(launched.queued, true);
+    const job = (await json(await fetch(base + "/api/jobs/" + launched.jobId))).job;
+    const spec = JSON.parse(job.spec_json);
+
+    assert.equal(spec.pipeline, true);
+    assert.equal(spec.clue, "default-run-budget");
+    assert.equal(spec.coverageMode, "full");
+    assert.equal(spec.maxScopes, undefined);
+    assert.equal(spec.mapSteps, undefined);
+    assert.equal(spec.digSteps, undefined);
+    assert.equal(spec.maxSteps, undefined);
+  });
+});
+
+test("api: explicit standard coverage leaves map/dig turns unbounded while capping the batch", async () => {
+  await withServer(async (base) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const created = await json(await post("/api/projects", {
+      name: "standard-run-budget",
       sourcePaths: ["./src"],
       config: { scopeCoverageMode: "standard" },
     }));
@@ -137,7 +161,8 @@ test("api: project run defaults leave map/dig turns unbounded while standard cov
     const spec = JSON.parse(job.spec_json);
 
     assert.equal(spec.pipeline, true);
-    assert.equal(spec.clue, "default-run-budget");
+    assert.equal(spec.clue, "standard-run-budget");
+    assert.equal(spec.coverageMode, "standard");
     assert.equal(spec.maxScopes, 30);
     assert.equal(spec.mapSteps, undefined);
     assert.equal(spec.digSteps, undefined);
@@ -2077,6 +2102,15 @@ test("api: project detail previews live scope checkpoints before daemon ingest",
       JSON.stringify([
         { id: "S1", obligation: "Bind value balance to proof public inputs.", region: "src/A.sol:1-40", score: 10 },
         { id: "S2", title: "Replay guard", location: "src/B.sol:1-30", status: "deferred", score: 5 },
+        {
+          id: "S3",
+          scope: "Verifier public input binding",
+          region: "src/C.sol:1-90",
+          spec: "The proof input must bind the committed root.",
+          value: "Invalid proofs could release escrowed funds.",
+          inputs: "Proof bytes, public input, committed root.",
+          exposure: "critical",
+        },
       ]),
     );
 
@@ -2088,18 +2122,25 @@ test("api: project detail previews live scope checkpoints before daemon ingest",
     }
 
     const detail = await json(await fetch(base + projectPath));
-    assert.deepEqual(detail.progress, { total: 2, audited: 0, deferred: 1, pending: 1 });
-    assert.equal(detail.scopes.length, 2);
-    assert.equal(detail.scopes[0].scope_id, "S1");
-    assert.equal(detail.scopes[0].title, "Bind value balance to proof public inputs.");
-    assert.equal(detail.scopes[0].obligation, "Bind value balance to proof public inputs.");
-    assert.equal(detail.scopes[0].region, "src/A.sol:1-40");
+    assert.deepEqual(detail.progress, { total: 3, audited: 0, deferred: 1, pending: 2 });
+    assert.equal(detail.scopes.length, 3);
+    const detailScopeById = new Map(detail.scopes.map((scope) => [scope.scope_id, scope]));
+    const detailS1 = detailScopeById.get("S1");
+    const detailS3 = detailScopeById.get("S3");
+    assert.equal(detailS1.title, "Bind value balance to proof public inputs.");
+    assert.equal(detailS1.obligation, "Bind value balance to proof public inputs.");
+    assert.equal(detailS1.region, "src/A.sol:1-40");
+    assert.equal(detailS3.title, "Verifier public input binding");
+    assert.equal(detailS3.obligation, "Spec: The proof input must bind the committed root. Value at risk: Invalid proofs could release escrowed funds. Inputs/trust boundary: Proof bytes, public input, committed root.");
+    assert.equal(detailS3.score, 10);
 
     const scopes = await json(await fetch(base + projectPath + "/scopes"));
     assert.deepEqual(scopes.progress, detail.progress);
-    assert.equal(scopes.scopes.length, 2);
-    assert.equal(scopes.scopes[1].obligation, "Replay guard");
-    assert.equal(scopes.scopes[1].region, "src/B.sol:1-30");
+    assert.equal(scopes.scopes.length, 3);
+    const listedScopeById = new Map(scopes.scopes.map((scope) => [scope.scope_id, scope]));
+    const listedS2 = listedScopeById.get("S2");
+    assert.equal(listedS2.obligation, "Replay guard");
+    assert.equal(listedS2.region, "src/B.sol:1-30");
   });
 });
 
