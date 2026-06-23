@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { AuditorConfig } from "../config.js";
 import { listWorkspaceFiles, prepareSandboxWorkspace, writeSandboxFiles } from "../security/sandbox.js";
@@ -124,7 +125,7 @@ export async function runPrepare(
     ...(options.onActivity ? { onActivity: options.onActivity } : {}),
   });
 
-  let manifest = readPrepareManifest(session);
+  let manifest = readPrepareManifest(session, workspace.absolute);
   const validation = validatePrepareManifest(manifest, options.matchDeployed);
   manifest = normalizePrepareManifest(manifest, validation);
   if (manifest !== undefined) {
@@ -179,7 +180,17 @@ export function normalizePrepareManifest(manifest: unknown, validation: PrepareV
   };
 }
 
-function readPrepareManifest(session: AgentSession): unknown {
+export function readPrepareManifest(session: Pick<AgentSession, "scratchFiles">, workspaceDir?: string): unknown {
+  if (workspaceDir) {
+    const file = path.join(workspaceDir, "prepare_manifest.json");
+    if (existsSync(file)) {
+      try {
+        return JSON.parse(readFileSync(file, "utf8"));
+      } catch {
+        return { raw: readFileSync(file, "utf8") };
+      }
+    }
+  }
   let entry = session.scratchFiles.get("prepare_manifest.json");
   if (entry === undefined) {
     for (const [key, value] of session.scratchFiles) {

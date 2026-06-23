@@ -7,7 +7,7 @@ import { defaultConfig, resolveRole, withRole, normalizeRoleModels } from "../di
 import { ProjectMemory } from "../dist/agent/memory.js";
 import { buildTools, describeAction, ingestFindingsFromScratch, newSession, dedupeFindings } from "../dist/agent/tools.js";
 import { runAudit } from "../dist/agent/audit.js";
-import { normalizePrepareManifest } from "../dist/agent/acquire.js";
+import { normalizePrepareManifest, readPrepareManifest } from "../dist/agent/acquire.js";
 import { runAuditLoop, isTransientError } from "../dist/agent/loop.js";
 import { buildConfirmKickoff, buildDeepKickoff, buildMapKickoff, AUDIT_CONFIRM_SYSTEM, AUDIT_DEEP_SYSTEM, AUDIT_SYSTEM, AUDIT_VERIFY_SYSTEM, MAP_GRANULARITY_RULES, MAP_SYSTEM, POC_TRUST_RULE } from "../dist/agent/prompts.js";
 import { runDifferentialConfirmation } from "../dist/agent/differential.js";
@@ -168,6 +168,34 @@ test("prepare manifest normalization turns ended in-progress manifests into term
   );
   assert.equal(placeholder.status, "partial");
   assert.match(placeholder.status_reason, /placeholders/);
+});
+
+test("prepare manifest reader prefers the workspace file over stale scratch content", async () => {
+  const dir = await tempDir();
+  try {
+    const session = newSession();
+    session.scratchFiles.set("prepare_manifest.json", JSON.stringify({ components: [], clue: "early checkpoint" }));
+    await writeFile(
+      path.join(dir, "prepare_manifest.json"),
+      JSON.stringify({
+        clue: "final manifest",
+        components: [
+          {
+            identity: "orchard",
+            revision: "abc123",
+            staged_path: "packages/crates/orchard-0.14.0",
+            match: "n/a",
+          },
+        ],
+      }),
+    );
+
+    const manifest = readPrepareManifest(session, dir);
+    assert.equal(manifest.clue, "final manifest");
+    assert.equal(manifest.components.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("report manifest is compact but keeps finding-relevant path hints", () => {
