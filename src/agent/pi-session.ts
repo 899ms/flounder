@@ -496,6 +496,12 @@ export const toolSchemas: Record<string, ReturnType<typeof Type.Object>> = {
     expected_exit_code: Type.Optional(Type.Integer()),
     timeout_ms: Type.Optional(Type.Integer()),
   }),
+  stage_package_source: Type.Object({
+    registry: Type.Literal("crates.io"),
+    package_name: Type.String(),
+    version: Type.String(),
+    destination: Type.Optional(Type.String()),
+  }),
 };
 
 export function buildSessionPrompt(input: { cfg: AuditorConfig; scopeNote?: string; fileManifest: string; memoryHint?: string; deep?: boolean; deepFocus?: string; map?: boolean; verify?: string; synthesize?: string; confirm?: string; report?: string; prepare?: string }): string {

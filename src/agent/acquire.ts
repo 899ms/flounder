@@ -86,7 +86,7 @@ export async function runPrepare(
 
   const memory = new ProjectMemory(path.join(projectHistoryDir(historyLocation(stagedCfg)), "memory.jsonl"));
   const ctx: ToolContext = { cfg: stagedCfg, source: [], corpus: [], memory, logger, session };
-  const tools = buildTools();
+  const tools = buildTools({ prepare: true });
 
   // SQLite tracking: record this prepare under the SAME project store the UI reads, so a
   // CLI-run prepare shows up in the UI exactly like run/map/audit/confirm. makeTracker lets a

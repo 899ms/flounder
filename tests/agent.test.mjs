@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import { defaultConfig, resolveRole, withRole, normalizeRoleModels } from "../dist/config.js";
 import { ProjectMemory } from "../dist/agent/memory.js";
 import { buildTools, describeAction, ingestFindingsFromScratch, newSession, dedupeFindings } from "../dist/agent/tools.js";
@@ -13,6 +15,7 @@ import { buildConfirmKickoff, buildDeepKickoff, buildMapKickoff, AUDIT_CONFIRM_S
 import { runDifferentialConfirmation } from "../dist/agent/differential.js";
 import { runRefutation } from "../dist/agent/refutation.js";
 import { renderReportFileManifest } from "../dist/agent/report.js";
+import { stagePackageSource } from "../dist/agent/package-source.js";
 import { buildSessionPrompt, FINDINGS_FINALIZE_PROMPT, isPiSessionProvider, mapCheckpointDirective, mapThinkingLevel, prepareCheckpointDirective, toolSchemas } from "../dist/agent/pi-session.js";
 import { MockAuditLlmClient } from "../dist/llm/mock.js";
 import { RunLogger } from "../dist/trace/logger.js";
@@ -36,6 +39,38 @@ async function tempLogger(baseDir) {
 
 function tool(name) {
   return buildTools().find((entry) => entry.name === name);
+}
+
+function tarGz(files) {
+  const blocks = [];
+  for (const [name, contentText] of Object.entries(files)) {
+    const content = Buffer.from(contentText);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100, "utf8");
+    header.write("0000644\0", 100, 8, "ascii");
+    header.write("0000000\0", 108, 8, "ascii");
+    header.write("0000000\0", 116, 8, "ascii");
+    header.write(content.length.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
+    header.write("00000000000\0", 136, 12, "ascii");
+    header.fill(0x20, 148, 156);
+    header.write("0", 156, 1, "ascii");
+    header.write("ustar\0", 257, 6, "ascii");
+    header.write("00", 263, 2, "ascii");
+    let checksum = 0;
+    for (const byte of header) checksum += byte;
+    header.write(checksum.toString(8).padStart(6, "0"), 148, 6, "ascii");
+    header[154] = 0;
+    header[155] = 0x20;
+    blocks.push(header, content);
+    const padding = (512 - (content.length % 512)) % 512;
+    if (padding) blocks.push(Buffer.alloc(padding));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
+}
+
+function asArrayBuffer(buffer) {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 }
 
 test("driver routing: real pi providers use the continuous session, mock/CLI fallbacks use the loop", () => {
@@ -131,6 +166,10 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
   assert.ok(preparePrompt.includes("Official docs/specs are best-effort"), "prepare should not block automation on missing docs/specs");
   assert.ok(preparePrompt.includes("Missing docs/specs are best-effort caveats"), "pi prepare should treat missing docs/specs as caveats");
   assert.ok(preparePrompt.includes("Source-ready is enough"), "prepare should stop after source/provenance is concrete instead of chasing optional material");
+  assert.ok(preparePrompt.includes("stage_package_source"), "prepare should prefer product package staging over ad hoc download scripts");
+  assert.ok(JSON.stringify(toolSchemas.stage_package_source).includes("crates.io"), "pi custom tool schema should expose package source staging");
+  assert.equal(buildTools().some((entry) => entry.name === "stage_package_source"), false, "ordinary audit tools should not expose prepare-only package staging");
+  assert.equal(buildTools({ prepare: true }).some((entry) => entry.name === "stage_package_source"), true, "prepare tool surface should include package source staging");
   assert.ok(preparePrompt.includes("Historical-release neutrality"), "prepare should not walk releases backward to find a vulnerable version");
   assert.ok(preparePrompt.includes("do not use labels such as \"vulnerable\""), "prepare should keep historical version selection neutral");
   assert.ok(!preparePrompt.includes("workspace contains the authorized target code, official answer-free docs/specs"), "prepare should not require docs/specs before source-ready completion");
@@ -158,6 +197,54 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
   const confirmKickoff = buildConfirmKickoff({ target: "t", tools: [], fileManifest: "x.rs", maxSteps: Number.POSITIVE_INFINITY, confirm: "[]" });
   assert.ok(confirmKickoff.includes("write only the decision sheet"), "confirm kickoff should frame Confirm as decision-only");
   assert.ok(confirmKickoff.includes("Do not write report_*.md"), "confirm kickoff should reserve formal reports for Report");
+});
+
+test("stage_package_source stages a crates.io package with checksum-verified provenance", async () => {
+  const dir = await tempDir();
+  try {
+    const archive = tarGz({
+      "demo-1.0.0/Cargo.toml": "[package]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+      "demo-1.0.0/src/lib.rs": "pub fn demo() -> bool { true }\n",
+    });
+    const checksum = createHash("sha256").update(archive).digest("hex");
+    const fakeFetch = async (url) => {
+      if (url.endsWith("/api/v1/crates/demo/1.0.0")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ version: { checksum, dl_path: "/api/v1/crates/demo/1.0.0/download" } }),
+          arrayBuffer: async () => asArrayBuffer(Buffer.alloc(0)),
+        };
+      }
+      if (url.endsWith("/api/v1/crates/demo/1.0.0/download")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          arrayBuffer: async () => asArrayBuffer(archive),
+        };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+
+    const result = await stagePackageSource({
+      workspaceAbsolute: dir,
+      registry: "crates.io",
+      packageName: "demo",
+      version: "1.0.0",
+      fetchImpl: fakeFetch,
+    });
+
+    assert.equal(result.stagedPath, "sources/crates/demo-1.0.0");
+    assert.equal(result.sha256, checksum);
+    assert.equal(result.componentTemplate.identity, "demo@1.0.0");
+    assert.equal(result.componentTemplate.staged_path, "sources/crates/demo-1.0.0");
+    assert.match(await readFile(path.join(dir, "sources/crates/demo-1.0.0/src/lib.rs"), "utf8"), /pub fn demo/);
+    const provenance = JSON.parse(await readFile(path.join(dir, "metadata/crates.io/demo-1.0.0.json"), "utf8"));
+    assert.equal(provenance.checksum, checksum);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("prepare manifest normalization turns ended in-progress manifests into terminal states", () => {

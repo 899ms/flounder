@@ -17,6 +17,7 @@ import {
 import type { RunLogger } from "../trace/logger.js";
 import type { ConfirmationStatus, Doc, ReproductionCommand, ReproductionCommandResult, ReproductionFile, Severity } from "../types.js";
 import type { ProjectMemory } from "./memory.js";
+import { stagePackageSource } from "./package-source.js";
 
 // Pi-style capability surface for audit mode. The framework exposes generic
 // affordances and hard guarantees only: read material, write/edit a copied
@@ -130,8 +131,10 @@ export interface AgentTool {
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 
-export function buildTools(): AgentTool[] {
-  return [readTool, writeTool, editTool, bashTool];
+export function buildTools(options: { prepare?: boolean } = {}): AgentTool[] {
+  const tools = [readTool, writeTool, editTool, bashTool];
+  if (options.prepare) tools.push(stagePackageSourceTool);
+  return tools;
 }
 
 /** A one-line, human-readable summary of a tool call for the live activity feed: the actual
@@ -145,6 +148,7 @@ export function describeAction(tool: string, args: Record<string, unknown>, obse
   if (tool === "bash") detail = s(args.cmd ?? args.command).replace(/\s+/g, " ").trim();
   else if (tool === "read") detail = safePath(args.path) + (args.start ? ":" + s(args.start) + (args.end ? "-" + s(args.end) : "") : "");
   else if (tool === "write" || tool === "edit") detail = safePath(args.path);
+  else if (tool === "stage_package_source") detail = `${s(args.registry)}:${s(args.package_name ?? args.package)}@${s(args.version)}`;
   else { const k = Object.keys(args)[0]; detail = k ? k + "=" + s(args[k]).replace(/\s+/g, " ").slice(0, 48) : ""; }
   const obs = s(observation).trim();
   const firstLine = obs.split("\n").find((l) => l.trim()) ?? "";
@@ -408,6 +412,52 @@ const bashTool: AgentTool = {
       observation: `${verdict}\n--- stdout ---\n${tail(result.stdout) || "(empty)"}\n--- stderr ---\n${tail(result.stderr) || "(empty)"}`,
       meta: { runId, passed, purpose: normalized.purpose },
     };
+  },
+};
+
+const stagePackageSourceTool: AgentTool = {
+  name: "stage_package_source",
+  description:
+    'PREPARE ONLY. Fetch an official published source package and stage it in the workspace with verified provenance. args: {"registry":"crates.io","package_name": string, "version": string, "destination"?: "sources/..."}. For crates.io this downloads the .crate archive, verifies the registry sha256 checksum, safely extracts source under sources/, and writes metadata/crates.io/<package>-<version>.json. Use this instead of ad hoc curl/tar scripts when the target clue is a published Rust crate.',
+  async run(args, ctx) {
+    if (!ctx.cfg.prepareMode) return { observation: "blocked: stage_package_source is only available during prepare." };
+    const registry = asEnum(args.registry, ["crates.io"], "crates.io");
+    const packageName = asString(args.package_name) ?? asString(args.package);
+    const version = asString(args.version);
+    if (!packageName) return { observation: 'error: "package_name" is required.' };
+    if (!version) return { observation: 'error: "version" is required.' };
+    const workspace = await ensureWorkspace(ctx);
+    if (!workspace) return { observation: "error: stage_package_source needs a prepare workspace." };
+    try {
+      const destination = asString(args.destination);
+      const result = await stagePackageSource({
+        workspaceAbsolute: workspace.absolute,
+        registry,
+        packageName,
+        version,
+        ...(destination ? { destination } : {}),
+      });
+      await ctx.logger.event("audit_stage_package_source", {
+        registry: result.registry,
+        package: result.packageName,
+        version: result.version,
+        stagedPath: result.stagedPath,
+        files: result.fileCount,
+      });
+      const manifestHint = {
+        component: result.componentTemplate,
+        real_target_ground_truth: result.groundTruthTemplate,
+      };
+      return {
+        observation:
+          `staged ${result.registry} package ${result.packageName}@${result.version} at ${result.stagedPath} `
+          + `(${result.fileCount} files, ${result.extractedBytes} bytes). Verified sha256 ${result.sha256}. `
+          + `Provenance: ${result.provenancePath}.\nAdd this to prepare_manifest.json, adjusting role/in_scope/scope_basis if the package is a dependency rather than the target:\n${JSON.stringify(manifestHint, null, 2)}`,
+        meta: { stagedPath: result.stagedPath, provenancePath: result.provenancePath, sha256: result.sha256 },
+      };
+    } catch (error) {
+      return { observation: `error: stage_package_source failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
   },
 };
 
