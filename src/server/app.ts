@@ -1253,6 +1253,7 @@ function isBlockingPrepareIssue(issue: string): boolean {
   return raw.includes("prepare_manifest.json has not been written")
     || raw.includes("prepare_manifest.json could not be parsed")
     || raw.includes("prepare_manifest.json is not a json object")
+    || raw.includes("manifest lists no components")
     || raw.includes("prepared workspace is empty")
     || raw.includes("answer firewall is");
 }

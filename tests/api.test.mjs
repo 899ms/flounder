@@ -1691,6 +1691,56 @@ test("api: terminal prepare runs display stale in-progress manifests as limited 
   });
 });
 
+test("api: terminal prepare with no components is not audit ready", async () => {
+  await withServer(async (base, out) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    const created = await json(await post("/api/projects", { name: "empty-components-prepare" }));
+    const runDir = path.join(out, "empty-components-prepare-test");
+    const workspace = path.join(runDir, "prepare", "workspace");
+    await mkdir(path.join(workspace, ".tmp"), { recursive: true });
+    await writeFile(path.join(workspace, ".tmp", "metadata.json"), "{}\n");
+    await writeFile(
+      path.join(workspace, "prepare_manifest.json"),
+      JSON.stringify({
+        status: "partial",
+        clue: "official source around a date",
+        posture: "blind",
+        answer_firewall: "clean",
+        real_target: {
+          requires_confirmation: false,
+          mode: "source-only",
+          reason: "No live deployment is in scope.",
+          ground_truth: [],
+          confirm_guidance: {
+            required: false,
+            allowed_network_actions: "none",
+            recommended_method: "Run local source-level checks only.",
+            not_required_reason: "No live deployment is in scope.",
+          },
+        },
+        components: [],
+        gaps: ["source packages not yet staged"],
+      }),
+    );
+
+    const store = MetadataStore.openForOutput(out);
+    try {
+      const runId = store.startRun({ projectId: created.id, kind: "prepare", runDir, provider: "openai-codex", model: "gpt-5.5" });
+      store.finishRun(runId, "done");
+    } finally {
+      store.close();
+    }
+
+    const detail = await json(await fetch(base + "/api/projects/" + created.uuid));
+    assert.equal(detail.prepareSummary.quality, "needs-review");
+    assert.equal(detail.prepareSummary.auditReady, false);
+    assert.equal(detail.prepareSummary.blocked, true);
+    assert.match(detail.prepareSummary.blockingIssues.join("\n"), /manifest lists no components/);
+  });
+});
+
 test("api: terminal prepare manifests with unresolved placeholders display as limited partial materials", async () => {
   await withServer(async (base, out) => {
     const json = (r) => r.json();
