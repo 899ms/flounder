@@ -727,7 +727,7 @@ async function projectGet(c: Ctx): Promise<void> {
     const currentResultRunsRaw = currentResultRuns(currentRunsRaw, scopeBoundary);
     const currentRunIds = runIdSet(currentResultRunsRaw);
     const runs = runApiRows(c.store, allRunsRaw.slice(0, 50), c.plane, viewBoundary);
-    const scopeView = currentScopeView(c.store, id, currentRunsRaw, activePrepareRefresh);
+    const scopeView = currentScopeView(c.store, id, currentRunsRaw, activePrepareRefresh, scopeBoundary);
     const scopes = scopeApiRows(scopeView.scopes.slice(0, 50));
     const progress = scopeView.progress;
     const allFindings = activePrepareRefresh
@@ -886,13 +886,17 @@ function currentScopeView(
   projectId: number,
   currentRuns: Array<Record<string, unknown>>,
   activePrepareRefreshStartedAt?: string,
+  scopeBoundary?: Record<string, unknown>,
 ): { scopes: Array<Record<string, unknown>>; progress: Coverage; total: number; hasInventory: boolean } {
   if (activePrepareRefreshStartedAt) return { scopes: [], progress: emptyProgress(), total: 0, hasInventory: false };
+  const boundaryCheckpoint = scopeBoundary ? latestScopeCheckpoint([scopeBoundary]) : null;
+  if (boundaryCheckpoint) return checkpointScopeView(store, projectId, boundaryCheckpoint);
+
   const latestRun = currentRuns.find(isScopeInventoryRun);
   if (!latestRun) return { scopes: [], progress: emptyProgress(), total: 0, hasInventory: false };
 
   const checkpoint = latestScopeCheckpoint([latestRun]);
-  if (checkpoint) return { scopes: checkpoint.scopes, progress: checkpoint.progress, total: checkpoint.scopes.length, hasInventory: true };
+  if (checkpoint) return checkpointScopeView(store, projectId, checkpoint);
 
   // A running remap/map invalidates the prior inventory for the current view until it checkpoints.
   // A running audit is downstream of the inventory; before its first checkpoint, keep showing
@@ -959,7 +963,8 @@ async function projectScopesGet(c: Ctx): Promise<void> {
     const materialBoundary = latestPrepareRun(allRuns);
     const activePrepareRefresh = activePrepareRefreshStartedAt(c.store, project, materialBoundary);
     const currentRuns = currentVisibleRuns(allRuns, materialBoundary, activePrepareRefresh);
-    const scopeView = currentScopeView(c.store, id, currentRuns, activePrepareRefresh);
+    const scopeBoundary = latestScopeInventoryBoundaryRun(currentRuns);
+    const scopeView = currentScopeView(c.store, id, currentRuns, activePrepareRefresh, scopeBoundary);
     if (!scopeView.hasInventory) {
       return sendJson(c.res, 200, {
         scopes: [],
@@ -978,7 +983,7 @@ async function projectScopesGet(c: Ctx): Promise<void> {
       total: scopeView.total,
       limit,
       offset,
-      material: materialSummary(allRuns, materialBoundary),
+      material: materialSummary(allRuns, materialBoundary, activePrepareRefresh),
     });
   });
 }
@@ -1061,6 +1066,41 @@ function scopeCheckpointRow(entry: unknown, index: number): Record<string, unkno
     priority: numericValue(scope.priority),
     status,
   };
+}
+
+function checkpointScopeView(
+  store: MetadataStore,
+  projectId: number,
+  checkpoint: { scopes: Array<Record<string, unknown>>; progress: Coverage },
+): { scopes: Array<Record<string, unknown>>; progress: Coverage; total: number; hasInventory: boolean } {
+  const stored = new Map(store.listScopes(projectId).map((scope) => [stringValue(scope.scope_id), scope]));
+  const scopes = checkpoint.scopes.map((scope) => {
+    const scopeId = stringValue(scope.scope_id);
+    const row = stored.get(scopeId);
+    if (!row) return scope;
+    return {
+      ...scope,
+      id: row.id,
+      project_id: row.project_id,
+      status: stringValue(row.status) || stringValue(scope.status) || "pending",
+      priority: numericValue(row.priority) ?? numericValue(scope.priority),
+      dig_seconds: row.dig_seconds,
+      updated_at: row.updated_at,
+    };
+  }).sort(scopeDisplaySort);
+  return { scopes, progress: progressForScopeRows(scopes), total: scopes.length, hasInventory: true };
+}
+
+function scopeDisplaySort(a: Record<string, unknown>, b: Record<string, unknown>): number {
+  const status = String(a.status).localeCompare(String(b.status));
+  if (status !== 0) return status;
+  return (numberValue(b.priority) - numberValue(a.priority)) || (numberValue(b.score) - numberValue(a.score));
+}
+
+function progressForScopeRows(scopes: Array<Record<string, unknown>>): Coverage {
+  const audited = scopes.filter((scope) => scope.status === "audited").length;
+  const deferred = scopes.filter((scope) => scope.status === "deferred").length;
+  return { total: scopes.length, audited, deferred, pending: Math.max(0, scopes.length - audited - deferred) };
 }
 
 function readPrepareSummary(run: Record<string, unknown>): Record<string, unknown> {
@@ -1642,8 +1682,8 @@ async function runLaunch(c: Ctx): Promise<void> {
   const currentRuns = currentMaterialRuns(allRuns, materialBoundary);
   const scopeBoundary = latestScopeInventoryBoundaryRun(currentRuns);
   const currentResultRunIds = runIdSet(currentResultRuns(currentRuns, scopeBoundary));
-  const currentScopeRunExists = !materialBoundary || currentRuns.some(isScopeInventoryRun);
-  const progress = currentScopeRunExists ? c.store.scopeProgress(projectId) : emptyProgress();
+  const scopeView = currentScopeView(c.store, projectId, currentRuns, undefined, scopeBoundary);
+  const progress = scopeView.hasInventory ? scopeView.progress : emptyProgress();
   const spec = launchSpec(project, body, c.out, profile, progress, phaseProfiles);
   if (spec.verb === "prepare") applyProjectPrepareDefaults(spec, project, runs);
   const prepared = applyPreparedWorkspaceIfNeeded(spec, runs);
@@ -1712,7 +1752,7 @@ async function runLaunch(c: Ctx): Promise<void> {
       daemonOnline: false,
     });
   }
-  if (spec.verb === "prepare" || (isScopeInventoryVerb(spec.verb) && !currentScopeRunExists)) await resetCurrentScopeProjection(c, project);
+  if (spec.verb === "prepare" || (isScopeInventoryVerb(spec.verb) && !scopeView.hasInventory)) await resetCurrentScopeProjection(c, project);
   const jobId = c.store.enqueueJob(spec.target, spec, daemonId);
   c.plane.nudge();
   sendJson(c.res, 200, { jobId, verb: spec.verb, queued: true, daemons: c.plane.daemonCount(daemonId), daemonId });
@@ -2692,7 +2732,7 @@ async function daemonRunUpdate(c: Ctx): Promise<void> {
   if (run.status !== "running") return sendJson(c.res, 200, { ok: true, stale: true });
   const projectId = Number(run.project_id);
   const body = (await readBody(c.req)) as {
-    scopes?: Parameters<MetadataStore["upsertScopes"]>[1];
+    scopes?: Parameters<MetadataStore["replaceScopes"]>[1];
     findings?: Parameters<MetadataStore["upsertFindings"]>[2];
     findingReports?: Array<{ findingId?: number; markdown?: string }>;
     reason?: string;
@@ -2703,7 +2743,7 @@ async function daemonRunUpdate(c: Ctx): Promise<void> {
     finish?: { status: Parameters<MetadataStore["finishRun"]>[1]; coverage?: Coverage; findingsTotal?: number };
   };
   if (body.scopes) {
-    c.store.upsertScopes(projectId, body.scopes);
+    c.store.replaceScopes(projectId, body.scopes);
     c.store.updateRunCoverage(runId, c.store.scopeProgress(projectId));
   }
   if (body.runScopes) c.store.updateRunScopes(runId, body.runScopes.done, body.runScopes.target);
@@ -2872,7 +2912,7 @@ function projectSnapshots(store: MetadataStore): Array<Record<string, unknown>> 
     const scopeBoundary = latestScopeInventoryBoundaryRun(currentRuns);
     const currentResultRows = currentResultRuns(currentRuns, scopeBoundary);
     const currentRunIds = runIdSet(currentResultRows);
-    const scopeView = currentScopeView(store, id, currentRuns, activePrepareRefresh);
+    const scopeView = currentScopeView(store, id, currentRuns, activePrepareRefresh, scopeBoundary);
     const findings = activePrepareRefresh
       ? []
       : reportableFindings(store.listFindings(id).filter((row) => rowBelongsToCurrentMaterial(row, currentRunIds, materialBoundary)));

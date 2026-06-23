@@ -656,6 +656,35 @@ export class MetadataStore {
     });
   }
 
+  /** Replace the active project inventory with a complete scope snapshot.
+   * Map/dig checkpoints report the full current inventory, not a partial diff; replacing
+   * prevents obsolete scopes from older maps from leaking into current coverage. */
+  replaceScopes(projectId: number, scopes: ScopeRow[]): void {
+    const upsert = this.db.prepare(
+      `INSERT INTO scope(project_id, scope_id, title, location, score, priority, status, dig_seconds, updated_at)
+       VALUES (?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?)
+       ON CONFLICT(project_id, scope_id) DO UPDATE SET
+         title = excluded.title, location = excluded.location, score = excluded.score,
+         status = excluded.status,
+         priority = COALESCE(excluded.priority, scope.priority),
+         dig_seconds = COALESCE(excluded.dig_seconds, scope.dig_seconds),
+         updated_at = CASE WHEN scope.status != excluded.status THEN excluded.updated_at ELSE scope.updated_at END`,
+    );
+    const ts = now();
+    this.transaction(() => {
+      if (scopes.length === 0) {
+        this.db.prepare("DELETE FROM scope WHERE project_id = ?").run(projectId);
+        return;
+      }
+      for (const s of scopes) {
+        upsert.run(projectId, s.scopeId, s.title ?? null, s.location ?? null, s.score ?? null, s.priority ?? null, s.status, s.digSeconds ?? null, ts);
+      }
+      const ids = scopes.map((scope) => scope.scopeId);
+      const placeholders = ids.map(() => "?").join(", ");
+      this.db.prepare(`DELETE FROM scope WHERE project_id = ? AND scope_id NOT IN (${placeholders})`).run(projectId, ...ids);
+    });
+  }
+
   listScopes(projectId: number): Array<Record<string, unknown>> {
     // dig order: manual priority first, then score (status groups the display).
     return this.db.prepare("SELECT * FROM scope WHERE project_id = ? ORDER BY status, priority DESC, score DESC").all(projectId) as Array<Record<string, unknown>>;

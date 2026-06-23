@@ -107,7 +107,7 @@ export class RunRecorder implements RunTracker {
   scopes(scopes: AuditScope[]): void {
     if (!this.ready()) return;
     try {
-      this.store!.upsertScopes(this.projectId!, scopes.map(toScopeRow));
+      this.store!.replaceScopes(this.projectId!, scopes.map(toScopeRow));
       this.store!.updateRunCoverage(this.runId!, this.store!.scopeProgress(this.projectId!));
     } catch (error) {
       this.disable("scopes", error);
