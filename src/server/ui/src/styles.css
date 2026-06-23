@@ -621,8 +621,8 @@ small {
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--canvas-subtle);
-  display: grid;
-  grid-template-rows: auto minmax(42px, auto) 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   width: 100%;
   text-align: left;
@@ -783,7 +783,7 @@ small {
 .phase strong {
   font-weight: 560;
   line-height: 1.3;
-  min-height: 42px;
+  min-height: 0;
   margin: 0;
   display: -webkit-box;
   overflow: hidden;
@@ -801,7 +801,8 @@ small {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
-  min-height: 58px;
+  min-height: 0;
+  flex: 1;
   justify-content: space-between;
   color: var(--fg-muted);
 }
@@ -809,7 +810,7 @@ small {
 .phase-detail > span:first-child {
   display: -webkit-box;
   overflow: hidden;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
 
