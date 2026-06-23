@@ -403,6 +403,9 @@ test("api: project current view ignores downstream data from older prepare mater
       const auditRun = store.startRun({ projectId: created.id, kind: "audit", runDir: path.join(out, "material-current-view-audit") });
       store.db.prepare("UPDATE run SET started_at = ? WHERE id = ?").run("2026-01-01T01:00:00.000Z", auditRun);
       store.upsertScopes(created.id, [{ scopeId: "old-scope", title: "Old scope", status: "audited", score: 1 }]);
+      await saveScopeInventory(projectHistoryDir({ outputDir: out, targetName: "material-current-view" }), [
+        { id: "old-scope", title: "Old scope", region: "src/Old.sol", obligation: "Old source obligation", status: "audited", score: 1 },
+      ]);
       store.upsertFindings(created.id, auditRun, [
         {
           findingKey: "old-bug",
@@ -438,6 +441,16 @@ test("api: project current view ignores downstream data from older prepare mater
     assert.equal(snapshot.auditConfirmedFindings, 0);
     assert.equal(snapshot.reproducedBugs, 0);
     assert.equal(snapshot.currentRunCount, 1);
+
+    const launched = await json(await post(`/api/projects/${created.uuid}/runs`, { verb: "run" }));
+    assert.equal(launched.queued, true);
+    const afterLaunch = MetadataStore.openForOutput(out);
+    try {
+      assert.equal(afterLaunch.countScopes(created.id), 0);
+    } finally {
+      afterLaunch.close();
+    }
+    assert.deepEqual(await loadScopeInventory(projectHistoryDir({ outputDir: out, targetName: "material-current-view" })), []);
   });
 });
 

@@ -824,6 +824,10 @@ function isScopeInventoryRun(run: Record<string, unknown>): boolean {
   return ["run", "map", "audit"].includes(stringValue(run.kind));
 }
 
+function isScopeInventoryVerb(verb: string | undefined): boolean {
+  return verb === "run" || verb === "map" || verb === "audit";
+}
+
 function materialStaleness(run: Record<string, unknown>, boundary?: Record<string, unknown>): Record<string, unknown> {
   if (!boundary || isCurrentMaterialRun(run, boundary)) return {};
   return {
@@ -1520,8 +1524,10 @@ async function runLaunch(c: Ctx): Promise<void> {
   const allRuns = c.store.listRuns(projectId);
   const runs = allRuns.slice(0, 50);
   const materialBoundary = latestPrepareRun(allRuns);
-  const currentRunIds = runIdSet(currentMaterialRuns(allRuns, materialBoundary));
-  const progress = !materialBoundary || currentMaterialRuns(allRuns, materialBoundary).some(isScopeInventoryRun) ? c.store.scopeProgress(projectId) : emptyProgress();
+  const currentRuns = currentMaterialRuns(allRuns, materialBoundary);
+  const currentRunIds = runIdSet(currentRuns);
+  const currentScopeRunExists = !materialBoundary || currentRuns.some(isScopeInventoryRun);
+  const progress = currentScopeRunExists ? c.store.scopeProgress(projectId) : emptyProgress();
   const spec = launchSpec(project, body, c.out, profile, progress, phaseProfiles);
   if (spec.verb === "prepare") applyProjectPrepareDefaults(spec, project, runs);
   const prepared = applyPreparedWorkspaceIfNeeded(spec, runs);
@@ -1590,7 +1596,7 @@ async function runLaunch(c: Ctx): Promise<void> {
       daemonOnline: false,
     });
   }
-  if (spec.verb === "prepare") await resetCurrentScopeProjection(c, project);
+  if (spec.verb === "prepare" || (isScopeInventoryVerb(spec.verb) && !currentScopeRunExists)) await resetCurrentScopeProjection(c, project);
   const jobId = c.store.enqueueJob(spec.target, spec, daemonId);
   c.plane.nudge();
   sendJson(c.res, 200, { jobId, verb: spec.verb, queued: true, daemons: c.plane.daemonCount(daemonId), daemonId });
