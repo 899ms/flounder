@@ -725,12 +725,9 @@ async function projectGet(c: Ctx): Promise<void> {
     const currentRunsRaw = currentVisibleRuns(allRunsRaw, materialBoundary, activePrepareRefresh);
     const currentRunIds = runIdSet(currentRunsRaw);
     const runs = runApiRows(c.store, allRunsRaw.slice(0, 50), c.plane, viewBoundary);
-    const currentScopeRunExists = !activePrepareRefresh && (!materialBoundary || currentRunsRaw.some(isScopeInventoryRun));
-    const storedProgress = currentScopeRunExists ? c.store.scopeProgress(id) : emptyProgress();
-    const storedScopes = currentScopeRunExists ? c.store.queryScopes(id, { limit: 50, offset: 0 }) : [];
-    const scopeCheckpoint = latestScopeCheckpoint(currentRunsRaw);
-    const scopes = scopeApiRows(storedScopes.length > 0 ? storedScopes : scopeCheckpoint?.scopes ?? storedScopes);
-    const progress = storedProgress.total > 0 ? storedProgress : scopeCheckpoint?.progress ?? storedProgress;
+    const scopeView = currentScopeView(c.store, id, currentRunsRaw, activePrepareRefresh);
+    const scopes = scopeApiRows(scopeView.scopes.slice(0, 50));
+    const progress = scopeView.progress;
     const allFindings = activePrepareRefresh
       ? []
       : reportableFindings(c.store.listFindings(id).filter((row) => rowBelongsToCurrentMaterial(row, currentRunIds, materialBoundary)));
@@ -751,7 +748,7 @@ async function projectGet(c: Ctx): Promise<void> {
       runs,
       runsTotal: c.store.countRuns(id),
       currentRunsTotal: currentRunsRaw.length,
-      activeScopeCount: currentScopeRunExists ? c.store.countScopesByStatus(id, "auditing") : 0,
+      activeScopeCount: scopeView.hasInventory ? c.store.countScopesByStatus(id, "auditing") : 0,
       confirmDecisions,
       scopes,
       allFindings: findingSummaries,
@@ -868,6 +865,30 @@ function isScopeInventoryRun(run: Record<string, unknown>): boolean {
   return ["run", "map", "audit"].includes(stringValue(run.kind));
 }
 
+function currentScopeView(
+  store: MetadataStore,
+  projectId: number,
+  currentRuns: Array<Record<string, unknown>>,
+  activePrepareRefreshStartedAt?: string,
+): { scopes: Array<Record<string, unknown>>; progress: Coverage; total: number; hasInventory: boolean } {
+  if (activePrepareRefreshStartedAt) return { scopes: [], progress: emptyProgress(), total: 0, hasInventory: false };
+  const latestRun = currentRuns.find(isScopeInventoryRun);
+  if (!latestRun) return { scopes: [], progress: emptyProgress(), total: 0, hasInventory: false };
+
+  const checkpoint = latestScopeCheckpoint([latestRun]);
+  if (checkpoint) return { scopes: checkpoint.scopes, progress: checkpoint.progress, total: checkpoint.scopes.length, hasInventory: true };
+
+  // A running remap/map invalidates the prior inventory for the current view until it checkpoints.
+  if (stringValue(latestRun.status) === "running") return { scopes: [], progress: emptyProgress(), total: 0, hasInventory: true };
+
+  return {
+    scopes: store.queryScopes(projectId, { limit: 50, offset: 0 }),
+    progress: store.scopeProgress(projectId),
+    total: store.countScopes(projectId),
+    hasInventory: true,
+  };
+}
+
 function isScopeInventoryVerb(verb: string | undefined): boolean {
   return verb === "run" || verb === "map" || verb === "audit";
 }
@@ -912,7 +933,8 @@ async function projectScopesGet(c: Ctx): Promise<void> {
     const materialBoundary = latestPrepareRun(allRuns);
     const activePrepareRefresh = activePrepareRefreshStartedAt(c.store, project, materialBoundary);
     const currentRuns = currentVisibleRuns(allRuns, materialBoundary, activePrepareRefresh);
-    if (activePrepareRefresh || (materialBoundary && !currentRuns.some(isScopeInventoryRun))) {
+    const scopeView = currentScopeView(c.store, id, currentRuns, activePrepareRefresh);
+    if (!scopeView.hasInventory) {
       return sendJson(c.res, 200, {
         scopes: [],
         progress: emptyProgress(),
@@ -924,16 +946,10 @@ async function projectScopesGet(c: Ctx): Promise<void> {
     }
     const limit = clampInt(c.url.searchParams.get("limit"), 50, 1, 500);
     const offset = clampInt(c.url.searchParams.get("offset"), 0, 0, 1_000_000);
-    const total = c.store.countScopes(id);
-    const scopes = scopeApiRows(c.store.queryScopes(id, { limit, offset }));
-    const progress = c.store.scopeProgress(id);
-    if (scopes.length > 0 || progress.total > 0) return sendJson(c.res, 200, { scopes, progress, total, limit, offset });
-    const checkpoint = latestScopeCheckpoint(currentRuns);
-    const checkpointScopes = scopeApiRows(checkpoint?.scopes ?? scopes);
     sendJson(c.res, 200, {
-      scopes: checkpointScopes.slice(offset, offset + limit),
-      progress: checkpoint?.progress ?? progress,
-      total: checkpointScopes.length,
+      scopes: scopeApiRows(scopeView.scopes.slice(offset, offset + limit)),
+      progress: scopeView.progress,
+      total: scopeView.total,
       limit,
       offset,
       material: materialSummary(allRuns, materialBoundary),
@@ -2825,7 +2841,7 @@ function projectSnapshots(store: MetadataStore): Array<Record<string, unknown>> 
     const currentRuns = currentVisibleRuns(allRuns, materialBoundary, activePrepareRefresh);
     const viewBoundary = materialViewBoundary(materialBoundary, activePrepareRefresh);
     const currentRunIds = runIdSet(currentRuns);
-    const currentScopeRunExists = !activePrepareRefresh && (!materialBoundary || currentRuns.some(isScopeInventoryRun));
+    const scopeView = currentScopeView(store, id, currentRuns, activePrepareRefresh);
     const findings = activePrepareRefresh
       ? []
       : reportableFindings(store.listFindings(id).filter((row) => rowBelongsToCurrentMaterial(row, currentRunIds, materialBoundary)));
@@ -2850,7 +2866,7 @@ function projectSnapshots(store: MetadataStore): Array<Record<string, unknown>> 
       daemon_id: project.daemon_id ?? null,
       dir: project.dir ?? null,
       config: safeParse(project.config_json),
-      progress: currentScopeRunExists ? store.scopeProgress(id) : emptyProgress(),
+      progress: scopeView.progress,
       findingCounts: counts,
       findingsTotal: findings.length,
       auditConfirmedFindings: countAuditConfirmedFindings(findings),

@@ -1700,6 +1700,50 @@ test("api: project detail previews live scope checkpoints before daemon ingest",
   });
 });
 
+test("api: running remap checkpoint replaces stored scope inventory in current views", async () => {
+  await withServer(async (base, out) => {
+    const json = (r) => r.json();
+    const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const created = await json(await post("/api/projects", { name: "scope-remap-preview", sourcePaths: ["./src"] }));
+    const projectPath = "/api/projects/" + created.uuid;
+
+    const runDir = await mkdtemp(path.join(out, "scope-remap-run-"));
+    const workspace = path.join(runDir, "audit", "workspace");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(
+      path.join(workspace, "scopes.json"),
+      JSON.stringify([
+        { id: "NEW-1", obligation: "Bind the current proof input.", region: "src/New.sol:1-40", score: 9 },
+        { id: "NEW-2", obligation: "Reject stale authorization.", region: "src/Auth.sol:1-30", score: 8 },
+      ]),
+    );
+
+    const store = MetadataStore.openForOutput(out);
+    try {
+      store.upsertScopes(created.id, [
+        { scopeId: "OLD-1", title: "Old inventory", status: "audited", score: 1 },
+      ]);
+      store.startRun({ projectId: created.id, kind: "map", runDir });
+    } finally {
+      store.close();
+    }
+
+    const detail = await json(await fetch(base + projectPath));
+    assert.deepEqual(detail.progress, { total: 2, audited: 0, deferred: 0, pending: 2 });
+    assert.equal(detail.scopes.length, 2);
+    assert.equal(detail.scopes[0].scope_id, "NEW-1");
+
+    const scopes = await json(await fetch(base + projectPath + "/scopes"));
+    assert.deepEqual(scopes.progress, detail.progress);
+    assert.equal(scopes.total, 2);
+    assert.equal(scopes.scopes[0].scope_id, "NEW-1");
+
+    const list = await json(await fetch(base + "/api/projects"));
+    const snapshot = list.projects.find((project) => project.uuid === created.uuid);
+    assert.deepEqual(snapshot.progress, detail.progress);
+  });
+});
+
 test("api: scope prioritize moves a mapped scope to the top of the queue", async () => {
   await withServer(async (base, out) => {
     const json = (r) => r.json();
