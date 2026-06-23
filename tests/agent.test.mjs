@@ -95,6 +95,9 @@ test("prompt contract keeps attacker-faithful PoC rule on legacy and pi-session 
   assert.ok(preparePrompt.includes("early checkpoint"), "prepare should checkpoint a partial manifest before long-tail acquisition");
   assert.ok(preparePrompt.includes("ordinary package-manager dependency"), "prepare should not chase every package dependency when manifests can resolve them");
   assert.ok(preparePrompt.includes("stop only after the manifest has nonempty component rows"), "prepare should not stop with staged files but empty components");
+  assert.ok(preparePrompt.includes("Official docs/specs are best-effort"), "prepare should not block automation on missing docs/specs");
+  assert.ok(preparePrompt.includes("Missing docs/specs are best-effort caveats"), "pi prepare should treat missing docs/specs as caveats");
+  assert.ok(!preparePrompt.includes("workspace contains the authorized target code, official answer-free docs/specs"), "prepare should not require docs/specs before source-ready completion");
   assert.ok(preparePrompt.includes("source-only not_required_reason"), "prepare needs explicit source-only stop criteria");
   assert.ok(preparePrompt.includes("A nonempty workspace with an empty components array is not a usable prepare output"), "prepare should reject empty component manifests");
   assert.ok(preparePrompt.includes("Do NOT audit yet"), "prepare should not spend the acquisition phase hunting bugs");
