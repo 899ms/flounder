@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultConfig, defaultOutputDir, defaultWorkspaceDir, normalizeProjectContext, normalizeRoleModels, type AuditorConfig } from "./config.js";
 import { CLI_CONFIG_KEYS, configFilePath, getCliConfigValue, isCliConfigKey, loadCliConfig, setCliConfigValue, unsetCliConfigValue, type CliConfigKey } from "./config-file.js";
-import { launchViaApi, ran, resolveServer, fetchArtifact } from "./cli-client.js";
+import { launchProjectRunViaApi, launchViaApi, ran, resolveServer, fetchArtifact } from "./cli-client.js";
 import { deriveScopeNote } from "./scope-note.js";
 import type { LaunchSpec } from "./server/run-manager.js";
 import { importRunToProjectHistory, projectHistoryManifestPath } from "./trace/history.js";
@@ -91,32 +91,38 @@ async function main(argv: string[]): Promise<void> {
     return; // runDaemon loops forever (until interrupted)
   }
 
+  if (cmd === "verify") {
+    // Thin alias for `flounder audit --verify <file>`: verify is a product phase, but the
+    // execution path stays the existing sealed audit verifier.
+    const verifyFromFlag = readFlag(rest, "--verify") ?? readFlag(rest, "--findings");
+    const verifyFile = verifyFromFlag ?? firstPositional(rest);
+    if (!verifyFile) throw new Error("flounder verify needs a findings JSON file: flounder verify <file> --source <paths...>");
+    await runSealedAuditCommand("audit", canonicalVerifyArgs(rest, verifyFile, verifyFromFlag === undefined));
+    return;
+  }
+
+  if (cmd === "report") {
+    // Formal report packaging is project-scoped: the server owns the eligibility rules
+    // (real-target reproduced vs source-only locally confirmed) and passes reportFindings
+    // to the daemon. No ad-hoc CLI-side reportFindings construction here.
+    const project = readFlag(rest, "--project") ?? readFlag(rest, "--project-uuid") ?? firstPositional(rest);
+    if (!project) throw new Error("flounder report needs --project <uuid|name> (or a project uuid/name positional argument)");
+    const body: Record<string, unknown> = { verb: "report" };
+    const findingIds = readIntFlags(rest, ["--finding", "--finding-id", "--finding-ids"]);
+    if (findingIds.length > 0) body.findingIds = findingIds;
+    if (rest.includes("--all")) body.regenerateReports = true;
+    const maxSteps = readIntFlag(rest, "--max-steps");
+    if (maxSteps !== undefined) body.maxSteps = maxSteps;
+    const run = await launchProjectRunViaApi(resolveServer(readFlag(rest, "--server")), project, body);
+    if (!ran(run)) process.exitCode = 1;
+    return;
+  }
+
   // The three sealed agentic verbs share one driver (runAudit); the verb selects the
   // posture. `run` = map -> audit one-stop; `map` = enumerate scopes only; `audit` =
   // the dig stage (a region, inventory scopes, or claims to verify).
   if (cmd === "run" || cmd === "map" || cmd === "audit") {
-    const { cfg } = await parseConfig(rest);
-    // `flounder run <clue>` with no --source = the one-command pipeline: prepare → map → dig →
-    // confirm → report, end to end (each a separate tracked phase; the sealed dig stays network-sealed).
-    if (cmd === "run" && cfg.sourcePaths.length === 0) {
-      const clue = (rest[0] && !rest[0].startsWith("--")) ? rest[0] : readFlag(rest, "--clue");
-      if (clue) { await runPipeline(rest, cfg, clue); return; }
-    }
-    if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required (or give a clue: flounder run <tx|address|link>)");
-    if (cfg.dryRun) throw new Error("agentic mode has no --dry-run; use --mock-llm for an offline check (or `npm run mock-audit`)");
-    // The CLI is a pure thin client: build the launch spec and enqueue it on the control plane,
-    // which dispatches it to a daemon that executes and streams it back — so every CLI run is
-    // tracked and visible in the UI exactly like a UI-launched one. No in-process path. No
-    // control plane reachable → a clear error (we never auto-spawn one).
-    const spec = buildAuditSpec(cmd, rest, cfg);
-    // `audit --verify <file>`: read the LOCAL findings file and carry its CONTENTS in the spec
-    // (not a path — the daemon may be on another machine), so verify is a control-plane run too.
-    if (cmd === "audit") {
-      const verifyFile = readFlag(rest, "--verify");
-      if (verifyFile !== undefined) spec.verifyFindings = JSON.parse(await readFile(verifyFile, "utf8"));
-    }
-    const run = await launchViaApi(resolveServer(readFlag(rest, "--server")), spec);
-    if (!ran(run)) process.exitCode = 1;
+    await runSealedAuditCommand(cmd, rest);
     return;
   }
 
@@ -165,6 +171,31 @@ async function main(argv: string[]): Promise<void> {
   }
 
   throw new Error(`Unknown command: ${cmd}`);
+}
+
+async function runSealedAuditCommand(cmd: "run" | "map" | "audit", rest: string[]): Promise<void> {
+  const { cfg } = await parseConfig(rest);
+  // `flounder run <clue>` with no --source = the one-command pipeline: prepare → map → dig →
+  // confirm → report, end to end (each a separate tracked phase; the sealed dig stays network-sealed).
+  if (cmd === "run" && cfg.sourcePaths.length === 0) {
+    const clue = (rest[0] && !rest[0].startsWith("--")) ? rest[0] : readFlag(rest, "--clue");
+    if (clue) { await runPipeline(rest, cfg, clue); return; }
+  }
+  if (cfg.sourcePaths.length === 0) throw new Error("--source <paths...> is required (or give a clue: flounder run <tx|address|link>)");
+  if (cfg.dryRun) throw new Error("agentic mode has no --dry-run; use --mock-llm for an offline check (or `npm run mock-audit`)");
+  // The CLI is a pure thin client: build the launch spec and enqueue it on the control plane,
+  // which dispatches it to a daemon that executes and streams it back — so every CLI run is
+  // tracked and visible in the UI exactly like a UI-launched one. No in-process path. No
+  // control plane reachable → a clear error (we never auto-spawn one).
+  const spec = buildAuditSpec(cmd, rest, cfg);
+  // `audit --verify <file>`: read the LOCAL findings file and carry its CONTENTS in the spec
+  // (not a path — the daemon may be on another machine), so verify is a control-plane run too.
+  if (cmd === "audit") {
+    const verifyFile = readFlag(rest, "--verify");
+    if (verifyFile !== undefined) spec.verifyFindings = JSON.parse(await readFile(verifyFile, "utf8"));
+  }
+  const run = await launchViaApi(resolveServer(readFlag(rest, "--server")), spec);
+  if (!ran(run)) process.exitCode = 1;
 }
 
 async function parseConfig(args: string[]): Promise<{ cfg: AuditorConfig }> {
@@ -618,6 +649,25 @@ function readIntFlag(args: string[], name: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function readIntFlags(args: string[], names: string[]): number[] {
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (let i = 0; i < args.length; i += 1) {
+    if (!names.includes(args[i]!)) continue;
+    const value = args[i + 1];
+    if (!value || value.startsWith("--")) throw new Error(`${args[i]} needs an integer id`);
+    for (const part of value.split(",")) {
+      const parsed = Number.parseInt(part, 10);
+      if (!Number.isInteger(parsed) || String(parsed) !== part.trim()) throw new Error(`${args[i]} needs an integer id, got "${part}"`);
+      if (!seen.has(parsed)) {
+        seen.add(parsed);
+        out.push(parsed);
+      }
+    }
+  }
+  return out;
+}
+
 function readFloatFlag(args: string[], name: string): number | undefined {
   const value = readFlag(args, name);
   if (!value) return undefined;
@@ -635,6 +685,49 @@ function readMultiFlag(args: string[], name: string): string[] {
     out.push(value);
   }
   return out;
+}
+
+function firstPositional(args: string[]): string | undefined {
+  const valueFlags = new Set([
+    "--project", "--project-uuid", "--finding", "--finding-id", "--finding-ids",
+    "--verify", "--findings", "--source", "--corpus", "--build-root", "--target",
+    "--config", "--provider", "--audit-model", "--model", "--thinking", "--out",
+    "--history-dir", "--server", "--clue", "--posture", "--endpoint", "--rpc",
+    "--max-steps", "--map-steps", "--dig-steps", "--max-scopes", "--dig-samples",
+    "--dig-concurrency", "--scope", "--scope-note", "--max-tokens", "--repro-timeout-ms",
+    "--sandbox-backend", "--sandbox-image", "--prepare-network", "--confirm-network",
+    "--sandbox-memory-mb", "--sandbox-cpus", "--prepare-timeout-ms",
+  ]);
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (!token) continue;
+    if (token.startsWith("--")) {
+      const next = args[i + 1];
+      if (valueFlags.has(token) && next && !next.startsWith("--")) i += 1;
+      continue;
+    }
+    return token;
+  }
+  return undefined;
+}
+
+function canonicalVerifyArgs(args: string[], verifyFile: string, removePositional: boolean): string[] {
+  const out: string[] = [];
+  let removedPositional = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (!token) continue;
+    if (token === "--verify" || token === "--findings") {
+      i += 1;
+      continue;
+    }
+    if (removePositional && !removedPositional && token === verifyFile && !token.startsWith("--")) {
+      removedPositional = true;
+      continue;
+    }
+    out.push(token);
+  }
+  return ["--verify", verifyFile, ...out];
 }
 
 async function runHistoryCommand(args: string[]): Promise<void> {
@@ -878,7 +971,9 @@ Usage:
   flounder run     --source <paths...> --target <name> [--corpus <paths...>]      sealed audit only: map -> dig on given source (--quick = one breadth pass)
   flounder map     --target <name> --source <paths...> [--corpus <paths...>]      enumerate the scope inventory only (writes audit_scopes.json)
   flounder audit   [<region> | --scope <id,...> | --verify <file>] --source ...   deep-audit a region, inventory scopes, or given claims
+  flounder verify  <file> --source <paths...>                                     alias for audit --verify: confirm/refute suspected findings locally
   flounder confirm <run-dir> --source <paths...>                                  open-world: reproduce a run's findings on the real target
+  flounder report  --project <uuid|name> [--finding <id>...] [--all]              generate missing reports or regenerate selected/all formal reports
   flounder history import-run --target <name> --run <dir>
   flounder server project list                                                   list tracked projects
   flounder server run list [--project <name>]                                    list run history globally or for one project
@@ -913,14 +1008,14 @@ Control plane vs execution plane:
   running "flounder daemon start". Use "flounder daemon provider check <provider>" to verify the daemon host.
 
 How CLI runs execute (the API is the single entry point):
-  run / map / audit / confirm / prepare are thin clients of the control plane: the CLI builds a
-  launch spec, POSTs it (so the run is tracked + visible in the UI exactly like a UI-launched one),
-  and streams the daemon's live log back here. The endpoint resolves --server > FLOUNDER_SERVER >
-  config 'server' > http://127.0.0.1:4500. If no control plane is reachable the CLI says so and
-  asks you to start one (flounder ui) — it never auto-spawns a server you can't see, and there is
-  no in-process path: the CLI does exactly what the UI does. Ctrl-C stops the run. (For an offline
-  check with no server, run the regression harness 'npm run mock-audit', which calls the library
-  directly.)
+  run / map / audit / verify / confirm / prepare / report are thin clients of the control plane:
+  the CLI builds a launch request, POSTs it (so the run is tracked + visible in the UI exactly like
+  a UI-launched one), and streams the daemon's live log back here. The endpoint resolves --server >
+  FLOUNDER_SERVER > config 'server' > http://127.0.0.1:4500. If no control plane is reachable the
+  CLI says so and asks you to start one (flounder ui) — it never auto-spawns a server you can't see,
+  and there is no in-process path: the CLI does exactly what the UI does. Ctrl-C stops the run. (For
+  an offline check with no server, run the regression harness 'npm run mock-audit', which calls the
+  library directly.)
 
 Sealed vs open world:
   run / map / audit are NETWORK-SEALED — the model finds and proves bugs blind, with no
@@ -975,6 +1070,12 @@ flounder audit selectors (choose one; default digs the existing inventory):
 
 flounder confirm: unbounded by default (ends when the model finishes); --max-steps caps it. Auto-resumes an
 interrupted prior confirm of the same run dir (carries already-settled rows forward); --fresh ignores it.
+
+flounder report:
+  --project <uuid|name>   tracked UI/API project. Names are resolved client-side when unique.
+  --finding <id>          regenerate one selected report; repeat or use comma-separated ids.
+  --all                   regenerate all current reportable findings. Without --finding/--all,
+                          report generates only missing reports.
 `);
 }
 

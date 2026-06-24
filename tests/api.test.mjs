@@ -63,6 +63,7 @@ test("api: GET /api is a self-describing catalog of every resource + operation",
     assert.match(projectRun.body.verifyFindings, /original row/);
     assert.match(projectRun.body.allowMaterialDrift, /expert override/);
     assert.match(projectRun.body.findingIds, /formal reports/);
+    assert.match(projectRun.body.regenerateReports, /already have formal reports/);
     const scopePatch = cat.endpoints.find((e) => e.method === "PATCH" && e.path === "/api/projects/:uuid/scopes/:scopeId");
     assert.match(scopePatch.summary, /top of the next auto-dig batch/i);
     assert.match(scopePatch.body.prioritize, /top/i);
@@ -998,6 +999,13 @@ test("api: report launch queues only reproduced real-target findings that were n
     assert.equal(regeneratedSpec.reportFindings.length, 1);
     assert.equal(regeneratedSpec.reportFindings[0].findingKey, "kexisting");
     assert.equal(regeneratedSpec.reportFindings[0].decisions[0].repro_command_id, "cmd-existing");
+
+    const regeneratedAll = await json(await post(`/api/projects/${created.uuid}/runs`, { verb: "report", regenerateReports: true }));
+    const regeneratedAllJob = (await json(await fetch(base + "/api/jobs/" + regeneratedAll.jobId))).job;
+    const regeneratedAllSpec = JSON.parse(regeneratedAllJob.spec_json);
+
+    assert.equal(regeneratedAllSpec.verb, "report");
+    assert.deepEqual(regeneratedAllSpec.reportFindings.map((finding) => finding.findingKey).sort(), ["kexisting", "kready"]);
 
     const rejected = await post(`/api/projects/${created.uuid}/runs`, { verb: "report", findingIds: [dropped.id] });
     assert.equal(rejected.status, 400);

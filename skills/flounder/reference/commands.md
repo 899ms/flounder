@@ -47,7 +47,9 @@ provider entry into `~/.flounder/agent/auth.json` on login/check.
 
 CLI naming convention:
 
-- Workflow verbs stay top-level: `flounder run`, `flounder map`, `flounder audit`, `flounder confirm`.
+- Workflow verbs stay top-level: `flounder run`, `flounder map`,
+  `flounder audit`, `flounder verify`, `flounder confirm`, and
+  `flounder report`.
 - Server/control-plane resource commands live under `flounder server ...`.
 - `flounder daemon ...` commands run on the daemon machine and can touch local
   provider auth, workspace paths, and executor settings. Start executors with
@@ -69,7 +71,9 @@ CLI naming convention:
 | `flounder audit <region> --source ...` | Deep-audit one region |
 | `flounder audit --scope <id,...> --source ...` | Deep-audit selected inventory scopes |
 | `flounder audit --verify <file> --source ...` | Confirm or refute suspected findings by execution |
+| `flounder verify <file> --source ...` | Alias for `audit --verify`; confirm or refute suspected findings by local execution |
 | `flounder confirm <run-dir> --source <paths...>` | Open-world reproduction and submit/no-submit decision sheet |
+| `flounder report --project <uuid\|name> [--finding <id>...] [--all]` | Generate missing formal reports, or regenerate selected/all reportable findings |
 | `flounder history import-run --target <name> --run <dir>` | Import an existing run directory into tracked history |
 
 ## Materials
@@ -196,7 +200,23 @@ Selected report regeneration:
 curl -X POST http://127.0.0.1:4500/api/projects/$PROJECT_UUID/runs \
   -H 'content-type: application/json' \
   -d '{"verb":"report","findingIds":[123,456]}'
+
+curl -X POST http://127.0.0.1:4500/api/projects/$PROJECT_UUID/runs \
+  -H 'content-type: application/json' \
+  -d '{"verb":"report","regenerateReports":true}'
 ```
+
+CLI equivalent:
+
+```bash
+flounder report --project $PROJECT_UUID
+flounder report --project $PROJECT_UUID --finding 123 --finding 456
+flounder report --project $PROJECT_UUID --all
+```
+
+Without `--finding` or `--all`, `flounder report` generates only missing formal
+reports. `--finding` regenerates selected reports even when a report already
+exists; `--all` regenerates every current reportable finding.
 
 ## Outputs
 

@@ -225,6 +225,7 @@ const ROUTES: Route[] = [
       quick: "boolean? — run: single breadth pass", mockLlm: "boolean? — offline mock model",
       region: "string? — audit: pinned region e.g. src/Foo.sol:120-180", scope: "string? — audit: scope id(s)", verifyFindings: "object|array? — audit: inline suspected finding(s) to confirm-or-refute by execution; project finding rows with id are linked back to that original row",
       allowMaterialDrift: "boolean? — expert override for verifyFindings when a newer Prepare run changed project materials after the selected findings were produced",
+      regenerateReports: "boolean? — report: include findings that already have formal reports; selected findingIds are always regenerated",
       scopeCoverageMode: "focused|standard|half|full|custom? — one-off coverage mode for this run; standard means audit until the project has 30 audited scopes",
       maxScopes: "number? — one-off scope cap for this run, or the custom target when scopeCoverageMode=custom", mapSteps: "number? — one-off map turn cap", digSteps: "number? — one-off per-scope dig turn cap",
       maxSteps: "number? — one-off global turn cap", digSamples: "number? — one-off samples per scope", digConcurrency: "number? — one-off parallel scopes",
@@ -1839,7 +1840,7 @@ async function runLaunch(c: Ctx): Promise<void> {
   }
   if (spec.verb === "report") {
     const selected = selectedFindingIds(body);
-    const reports = reportWorklist(c.store, Number(project.id), selected, currentResultRunIds, materialBoundary, latestPrepareRequiresRealTargetConfirmation(runs));
+    const reports = reportWorklist(c.store, Number(project.id), selected, currentResultRunIds, materialBoundary, latestPrepareRequiresRealTargetConfirmation(runs), body.regenerateReports === true);
     if (reports.error) return sendJson(c.res, 400, { error: reports.error });
     spec.reportFindings = reports.findings;
   }
@@ -1958,12 +1959,13 @@ function reportWorklist(
   currentRunIds?: Set<number>,
   materialBoundary?: Record<string, unknown>,
   requiresRealTargetConfirmation = true,
+  includeExistingReports = false,
 ): { findings: ReportFindingSpec[]; error?: undefined } | { findings?: undefined; error: string } {
   const selected = selectedIds.length ? new Set(selectedIds) : undefined;
   const rows = reportableFindings(store.listFindings(projectId)).filter((row) => {
     if (selected && !selected.has(Number(row.id))) return false;
     if (isIgnoredFinding(row)) return false;
-    if (!selected && rowHasFormalReport(row)) return false;
+    if (!selected && !includeExistingReports && rowHasFormalReport(row)) return false;
     if (!rowBelongsToCurrentMaterial(row, currentRunIds ?? new Set(), materialBoundary)) return false;
     if (!requiresRealTargetConfirmation) return isExecutionConfirmedFindingStatus(String(row.status ?? "").toLowerCase());
     if (String(row.confirm_status ?? "") !== "reproduced") return false;

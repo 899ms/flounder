@@ -1,4 +1,4 @@
-// The CLI as a thin client of the control plane. A `flounder run|map|audit|confirm|prepare`
+// The CLI as a thin client of the control plane. A `flounder run|map|audit|verify|confirm|prepare|report`
 // (without --local/--mock-llm) builds a launch spec, POSTs it to the control plane, and then
 // FOLLOWS the run the daemon executes — so every CLI run is tracked and visible in the UI
 // exactly like a UI-launched one, and the API is the single entry point. Execution never
@@ -98,6 +98,40 @@ export async function launchViaApi(server: string, spec: LaunchSpec): Promise<Re
 
   console.log(`[running] run #${runId} — live log below (Ctrl-C stops the run):\n`);
   return await streamAndAwait(server, runId);
+}
+
+/** Enqueue a project-scoped run, letting the server resolve stored materials and worklists.
+ * This is required for report/confirm/verify actions whose eligibility is DB-backed. */
+export async function launchProjectRunViaApi(server: string, projectRef: string, body: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+  console.log(`[control plane] ${server}`);
+  const projectUuid = await resolveProjectUuid(server, projectRef);
+  const launched = await api(server, "POST", `/api/projects/${encodeURIComponent(projectUuid)}/runs`, body);
+  const jobId = launched.jobId;
+  const verb = typeof launched.verb === "string" ? launched.verb : String(body.verb ?? "run");
+  const daemons = typeof launched.daemons === "number" ? launched.daemons : 0;
+  if (typeof jobId !== "number") throw new Error(`project run was not accepted: ${JSON.stringify(launched)}`);
+  console.log(`[queued] job #${jobId} (${verb}) on project "${projectRef}" · ${daemons} daemon(s) connected`);
+  if (daemons === 0) {
+    console.log(`[warning] no executor daemon is connected — the job stays queued until one connects.`);
+    console.log(`          start one co-located:  flounder ui    (or a remote: flounder daemon start --server ${server} --token <token>)`);
+  }
+  if (verb === "run") return await streamPipelineJob(server, jobId);
+  const runId = await waitForRun(server, jobId);
+  if (runId === undefined) return undefined;
+  console.log(`[running] run #${runId} — live log below (Ctrl-C stops the run):\n`);
+  return await streamAndAwait(server, runId);
+}
+
+async function resolveProjectUuid(server: string, ref: string): Promise<string> {
+  const list = await api(server, "GET", `/api/projects?limit=500&q=${encodeURIComponent(ref)}`);
+  const projects = Array.isArray(list.projects) ? list.projects as Array<Record<string, unknown>> : [];
+  const matches = projects.filter((project) => project.uuid === ref || project.name === ref);
+  const uuidMatches = matches.filter((project) => project.uuid === ref);
+  if (uuidMatches.length === 1 && typeof uuidMatches[0]!.uuid === "string") return uuidMatches[0]!.uuid;
+  const nameMatches = matches.filter((project) => project.name === ref);
+  if (nameMatches.length === 1 && typeof nameMatches[0]!.uuid === "string") return nameMatches[0]!.uuid;
+  if (nameMatches.length > 1) throw new Error(`project name "${ref}" is ambiguous; use the project UUID`);
+  return ref;
 }
 
 /** True iff a launchViaApi result finished `done`. */
