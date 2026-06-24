@@ -28,6 +28,7 @@ import { deriveScopeNote } from "../scope-note.js";
 
 const UI_HTML_PATH = fileURLToPath(new URL("./public/index.html", import.meta.url));
 const UI_PUBLIC_DIR = path.dirname(UI_HTML_PATH);
+const PROJECT_STREAM_LIMIT = 100;
 function loadUiHtml(): string {
   try {
     return readFileSync(UI_HTML_PATH, "utf8");
@@ -147,11 +148,24 @@ const ROUTES: Route[] = [
 
   route({
     method: "GET", path: "/api/projects",
-    summary: "List active projects with a live snapshot (scope coverage, finding counts, confirmed-bug count, latest run, active runs). Pass ?archived=1 to list archived projects for Settings.",
-    query: { archived: "boolean? — when true, return archived projects instead of active projects" },
+    summary: "List projects with a live snapshot (scope coverage, finding counts, confirmed-bug count, latest run, active runs). Paginated with ?limit/&offset; pass ?archived=1 to list archived projects for Settings.",
+    query: {
+      archived: "boolean? — when true, return archived projects instead of active projects",
+      limit: "number? (default 100)",
+      offset: "number? (default 0)",
+      q: "string? — case-insensitive project-name search",
+    },
     handler: async (c) => {
+      const limit = clampInt(c.url.searchParams.get("limit"), 100, 1, 500);
+      const offset = clampInt(c.url.searchParams.get("offset"), 0, 0, 1_000_000);
+      const options: ProjectListOptions = {
+        archived: truthyParam(c.url.searchParams.get("archived")),
+        limit,
+        offset,
+        search: c.url.searchParams.get("q") ?? undefined,
+      };
       await reconcileAllStaleAuditingScopes(c);
-      sendJson(c.res, 200, { projects: projectSnapshots(c.store, { archived: truthyParam(c.url.searchParams.get("archived")) }) });
+      sendJson(c.res, 200, { projects: projectSnapshots(c.store, options), total: c.store.countProjects(options), limit, offset });
     },
   }),
   route({
@@ -3125,7 +3139,7 @@ function streamSnapshots(res: ServerResponse, store: MetadataStore, plane: Contr
   // A throw here (closed socket, or a transient store read error) must not crash the server.
   function tick(): void {
     try {
-      res.write(`data: ${JSON.stringify({ projects: projectSnapshots(store), active: activeRuns(store, plane) })}\n\n`);
+      res.write(`data: ${JSON.stringify({ projects: projectSnapshots(store, { limit: PROJECT_STREAM_LIMIT }), active: activeRuns(store, plane) })}\n\n`);
     } catch {
       clearInterval(timer);
     }

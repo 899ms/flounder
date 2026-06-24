@@ -506,6 +506,15 @@ textarea {
   background: var(--sel-bg);
 }
 
+.project-action-popover button.danger {
+  color: var(--danger);
+}
+
+.project-action-popover button.danger:hover,
+.project-action-popover button.danger:focus-visible {
+  background: color-mix(in srgb, var(--danger) 9%, var(--canvas));
+}
+
 .project-pin-indicator {
   display: inline-grid;
   place-items: center;
@@ -516,6 +525,12 @@ textarea {
   margin-top: 12px;
   color: var(--fg-muted);
   font-size: 13px;
+}
+
+.project-rail-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 12px;
 }
 
 .project-row-top {
@@ -1865,6 +1880,20 @@ small {
 
 .archived-project-card {
   align-items: center;
+}
+
+.resource-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.resource-list-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 6px;
 }
 
 .archived-project-card .btn {

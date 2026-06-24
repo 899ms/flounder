@@ -328,6 +328,20 @@ export interface ProjectPayload {
   sortOrder?: number | null;
 }
 
+export interface ProjectListParams {
+  archived?: boolean;
+  limit?: number;
+  offset?: number;
+  q?: string;
+}
+
+export interface ProjectListResponse {
+  projects: ProjectSnapshot[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface LaunchPayload {
   verb: string;
   region?: string;
@@ -357,9 +371,19 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   return (await res.json()) as T;
 }
 
+function projectListPath(params: ProjectListParams = {}): string {
+  const query = new URLSearchParams();
+  if (params.archived) query.set("archived", "1");
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (params.offset !== undefined) query.set("offset", String(params.offset));
+  if (params.q?.trim()) query.set("q", params.q.trim());
+  const qs = query.toString();
+  return `/api/projects${qs ? `?${qs}` : ""}`;
+}
+
 export const api = {
-  projects: () => fetchJson<{ projects: ProjectSnapshot[] }>("/api/projects"),
-  archivedProjects: () => fetchJson<{ projects: ProjectSnapshot[] }>("/api/projects?archived=1"),
+  projects: (params?: ProjectListParams) => fetchJson<ProjectListResponse>(projectListPath(params)),
+  archivedProjects: (params?: Omit<ProjectListParams, "archived">) => fetchJson<ProjectListResponse>(projectListPath({ ...params, archived: true })),
   project: (uuid: string) => fetchJson<ProjectDetail>(`/api/projects/${encodeURIComponent(uuid)}`),
   scopes: (uuid: string, params = new URLSearchParams()) =>
     fetchJson<{ scopes: ScopeRow[]; progress: Coverage; total: number; limit: number; offset: number }>(`/api/projects/${encodeURIComponent(uuid)}/scopes?${params.toString()}`),

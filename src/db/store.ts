@@ -38,6 +38,9 @@ export interface ProjectInput {
 
 export interface ProjectListOptions {
   archived?: boolean | "all" | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+  search?: string | undefined;
 }
 
 export interface RunInput {
@@ -162,7 +165,7 @@ CREATE TABLE IF NOT EXISTS project(
   dir TEXT,                       -- project subdir relative to the daemon's workspace root (default = uuid)
   archived_at TEXT,               -- hidden from the normal project rail; reversible from Settings
   pinned_at TEXT,                 -- pinned projects sort before unpinned projects
-  sort_order INTEGER,             -- user-defined rail order, independent from created_at
+  sort_order INTEGER,             -- rail order; new projects are inserted ahead of existing unpinned items
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -417,10 +420,11 @@ export class MetadataStore {
     const ts = now();
     const projectUuid = randomUUID();
     const hasExplicitDir = input.dir !== undefined;
+    const insertSortOrder = this.nextProjectSortOrder();
     this.db
       .prepare(
-        `INSERT INTO project(uuid, name, source_paths, build_root, corpus_paths, config_json, provider_id, daemon_id, dir, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO project(uuid, name, source_paths, build_root, corpus_paths, config_json, provider_id, daemon_id, dir, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            source_paths = excluded.source_paths,
            build_root   = excluded.build_root,
@@ -443,6 +447,7 @@ export class MetadataStore {
         input.providerId ?? null,
         input.daemonId ?? null,
         input.dir ?? projectUuid,
+        insertSortOrder,
         ts,
         ts,
         hasExplicitDir ? 1 : 0,
@@ -452,11 +457,11 @@ export class MetadataStore {
   }
 
   listProjects(options: ProjectListOptions = {}): Array<Record<string, unknown>> {
-    const where = options.archived === "all"
-      ? ""
-      : options.archived === true
-        ? "WHERE archived_at IS NOT NULL"
-        : "WHERE archived_at IS NULL";
+    const { where, args } = projectListWhere(options);
+    const limit = typeof options.limit === "number" && Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit)) : undefined;
+    const offset = typeof options.offset === "number" && Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset)) : 0;
+    const page = limit === undefined ? "" : " LIMIT ? OFFSET ?";
+    const pageArgs = limit === undefined ? [] : [limit, offset];
     return this.db
       .prepare(
         `SELECT * FROM project ${where}
@@ -465,9 +470,20 @@ export class MetadataStore {
            CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC,
            sort_order ASC,
            created_at DESC,
-           id DESC`,
+           id DESC${page}`,
       )
-      .all() as Array<Record<string, unknown>>;
+      .all(...args, ...pageArgs) as Array<Record<string, unknown>>;
+  }
+
+  countProjects(options: ProjectListOptions = {}): number {
+    const { where, args } = projectListWhere(options);
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM project ${where}`).get(...args) as { count: number } | undefined;
+    return Number(row?.count ?? 0);
+  }
+
+  private nextProjectSortOrder(): number {
+    const row = this.db.prepare("SELECT MIN(sort_order) AS min_order FROM project WHERE archived_at IS NULL").get() as { min_order: number | null } | undefined;
+    return typeof row?.min_order === "number" ? row.min_order - 10 : 0;
   }
 
   getProject(name: string): Record<string, unknown> | undefined {
@@ -1330,6 +1346,18 @@ function toProviderProfile(row: Record<string, unknown>): ProviderProfile {
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
+}
+
+function projectListWhere(options: ProjectListOptions): { where: string; args: string[] } {
+  const clauses: string[] = [];
+  const args: string[] = [];
+  if (options.archived !== "all") clauses.push(options.archived === true ? "archived_at IS NOT NULL" : "archived_at IS NULL");
+  const search = typeof options.search === "string" ? options.search.trim().toLowerCase() : "";
+  if (search) {
+    clauses.push("LOWER(name) LIKE ?");
+    args.push(`%${search}%`);
+  }
+  return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", args };
 }
 
 // Build a parameterized WHERE clause for finding queries (status + text search).

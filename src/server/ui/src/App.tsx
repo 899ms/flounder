@@ -217,6 +217,50 @@ function snapshotFromDetail(project: ProjectSnapshot, detail: ProjectDetail): Pr
   };
 }
 
+function snapshotFromProjectDetail(detail: ProjectDetail): ProjectSnapshot {
+  const current = currentMaterialDetail(detail);
+  const currentRuns = currentMaterialRuns(detail.runs, detail.material);
+  const base: ProjectSnapshot = {
+    id: current.project.id,
+    uuid: current.project.uuid,
+    name: current.project.name,
+    provider_id: current.project.provider_id,
+    daemon_id: current.project.daemon_id,
+    dir: current.project.dir,
+    archived_at: current.project.archived_at,
+    pinned_at: current.project.pinned_at,
+    sort_order: current.project.sort_order,
+    created_at: current.project.created_at,
+    updated_at: current.project.updated_at,
+    progress: current.progress,
+    findingCounts: current.statusCounts,
+    findingsTotal: current.findingsTotal,
+    auditConfirmedFindings: current.auditConfirmedFindings,
+    reproducedBugs: current.reproducedBugs,
+    confirmedBugs: current.confirmedBugs,
+    confirmDecisionCount: current.confirmDecisions.length,
+    latestRun: currentRuns[0] ?? null,
+    activeRuns: currentRuns.filter((run) => run.status === "running").length,
+    currentRunCount: current.currentRunsTotal ?? currentRuns.length,
+    material: current.material,
+  };
+  return snapshotFromDetail(base, detail);
+}
+
+function appendProjectPage(current: ProjectSnapshot[], incoming: ProjectSnapshot[]): ProjectSnapshot[] {
+  const seen = new Set(current.map((project) => project.uuid));
+  return [...current, ...incoming.filter((project) => !seen.has(project.uuid))];
+}
+
+function mergeProjectSnapshots(current: ProjectSnapshot[], incoming: ProjectSnapshot[], prependNew: boolean): ProjectSnapshot[] {
+  if (!incoming.length) return current;
+  const byUuid = new Map(incoming.map((project) => [project.uuid, project]));
+  const updated = current.map((project) => byUuid.get(project.uuid) ?? project);
+  if (!prependNew) return updated;
+  const loaded = new Set(updated.map((project) => project.uuid));
+  return [...incoming.filter((project) => !loaded.has(project.uuid)), ...updated];
+}
+
 function daemonAgeMs(daemon: DaemonRow): number {
   if (!daemon.last_seen_at) return Number.POSITIVE_INFINITY;
   const t = new Date(daemon.last_seen_at).getTime();
@@ -673,6 +717,7 @@ const STREAM_MERGE_WINDOW_MS = 15_000;
 const STICKY_SCROLL_THRESHOLD_PX = 32;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE = 25;
+const PROJECT_PAGE_SIZE = 100;
 
 function normalizeActivityBody(value: string): string {
   return value.replace(/\n{3,}/g, "\n\n").trimStart();
@@ -1126,6 +1171,12 @@ export function App() {
   const [route, setRoute] = useState<RouteState>(() => readRoute());
   const [projects, setProjects] = useState<ProjectSnapshot[]>([]);
   const [archivedProjects, setArchivedProjects] = useState<ProjectSnapshot[]>([]);
+  const [projectsTotal, setProjectsTotal] = useState(0);
+  const [archivedProjectsTotal, setArchivedProjectsTotal] = useState(0);
+  const [projectQuery, setProjectQuery] = useState("");
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [archivedProjectLoading, setArchivedProjectLoading] = useState(false);
+  const [activeJobsTotal, setActiveJobsTotal] = useState(0);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [providers, setProviders] = useState<ProviderProfile[]>([]);
   const [daemons, setDaemons] = useState<DaemonRow[]>([]);
@@ -1149,6 +1200,7 @@ export function App() {
   const [logRun, setLogRun] = useState<RunRow | null>(null);
   const [stopConfirmRun, setStopConfirmRun] = useState<RunRow | null>(null);
   const [launchConfirmAction, setLaunchConfirmAction] = useState<LaunchAction | null>(null);
+  const [deleteProjectConfirm, setDeleteProjectConfirm] = useState<ProjectSnapshot | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -1188,16 +1240,46 @@ export function App() {
         setModal(null);
         setStopConfirmRun(null);
         setLaunchConfirmAction(null);
+        setDeleteProjectConfirm(null);
       }
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, []);
 
+  async function loadProjectPage(append = false) {
+    setProjectLoading(true);
+    try {
+      const res = await api.projects({ limit: PROJECT_PAGE_SIZE, offset: append ? projects.length : 0, q: projectQuery });
+      setProjects((current) => append ? appendProjectPage(current, res.projects) : res.projects);
+      setProjectsTotal(res.total);
+    } finally {
+      setProjectLoading(false);
+    }
+  }
+
+  async function loadArchivedProjectPage(append = false) {
+    setArchivedProjectLoading(true);
+    try {
+      const res = await api.archivedProjects({ limit: PROJECT_PAGE_SIZE, offset: append ? archivedProjects.length : 0 });
+      setArchivedProjects((current) => append ? appendProjectPage(current, res.projects) : res.projects);
+      setArchivedProjectsTotal(res.total);
+    } finally {
+      setArchivedProjectLoading(false);
+    }
+  }
+
   async function refreshBase() {
-    const [projectRes, archivedRes, providerRes, daemonRes] = await Promise.all([api.projects(), api.archivedProjects(), api.providers(), api.daemons()]);
+    const [projectRes, archivedRes, providerRes, daemonRes] = await Promise.all([
+      api.projects({ limit: PROJECT_PAGE_SIZE, q: projectQuery }),
+      api.archivedProjects({ limit: PROJECT_PAGE_SIZE }),
+      api.providers(),
+      api.daemons(),
+    ]);
     setProjects(projectRes.projects);
     setArchivedProjects(archivedRes.projects);
+    setProjectsTotal(projectRes.total);
+    setArchivedProjectsTotal(archivedRes.total);
     setProviders(providerRes.providers);
     setDaemons(daemonRes.daemons);
   }
@@ -1205,6 +1287,13 @@ export function App() {
   useEffect(() => {
     void refreshBase().catch((error: unknown) => setToast({ tone: "error", message: String(error instanceof Error ? error.message : error) }));
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadProjectPage(false).catch((error: unknown) => setToast({ tone: "error", message: String(error instanceof Error ? error.message : error) }));
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [projectQuery]);
 
   useEffect(() => {
     if (!route.projectUuid) {
@@ -1255,12 +1344,14 @@ export function App() {
   }, [bugPage, bugPageCount]);
 
   const selectedProject = route.projectUuid ? projects.find((p) => p.uuid === route.projectUuid) : undefined;
+  const selectedProjectForDetail = selectedProject ?? (detail && detail.project.uuid === route.projectUuid ? snapshotFromProjectDetail(detail) : undefined);
   const currentDetailForModal = detail ? currentMaterialDetail(detail) : null;
   const sidebarProjects = detail && selectedProject
     ? projects.map((project) => project.uuid === detail.project.uuid ? snapshotFromDetail(project, detail) : project)
     : projects;
   const onlineDaemons = daemons.filter((daemon) => daemonHealth(daemon) === "online");
-  const latestRunning = projects.reduce((n, project) => n + (project.activeRuns ?? (project.latestRun?.status === "running" ? 1 : 0)), 0);
+  const loadedRunning = projects.reduce((n, project) => n + (project.activeRuns ?? (project.latestRun?.status === "running" ? 1 : 0)), 0);
+  const latestRunning = Math.max(activeJobsTotal, loadedRunning);
   const visibleRunningRun = detail?.runs.some((run) => run.status === "running") ?? false;
 
   useEffect(() => {
@@ -1273,9 +1364,11 @@ export function App() {
     const source = new EventSource("/api/stream");
     source.onmessage = (message) => {
       try {
-        const payload = JSON.parse(message.data) as { projects?: ProjectSnapshot[] };
+        const payload = JSON.parse(message.data) as { projects?: ProjectSnapshot[]; active?: unknown[] };
+        if (Array.isArray(payload.active)) setActiveJobsTotal(payload.active.length);
         if (Array.isArray(payload.projects)) {
-          setProjects(payload.projects);
+          const prependNew = !projectQuery.trim();
+          setProjects((current) => mergeProjectSnapshots(current, payload.projects ?? [], prependNew));
           const currentUuid = route.projectUuid;
           const current = currentUuid ? payload.projects.find((project) => project.uuid === currentUuid) : undefined;
           const detailStillRunning = detailRef.current
@@ -1305,7 +1398,7 @@ export function App() {
       }
     };
     return () => source.close();
-  }, [route.projectUuid]);
+  }, [route.projectUuid, projectQuery]);
 
   async function launch(action: LaunchAction, selectedFindings?: FindingRow[]) {
     if (!route.projectUuid) return;
@@ -1465,6 +1558,26 @@ export function App() {
     }
   }
 
+  async function deleteProject(project: ProjectSnapshot) {
+    setBusy(true);
+    try {
+      await api.deleteProject(project.uuid);
+      setDeleteProjectConfirm(null);
+      setProjects((current) => current.filter((entry) => entry.uuid !== project.uuid));
+      setArchivedProjects((current) => current.filter((entry) => entry.uuid !== project.uuid));
+      if (route.projectUuid === project.uuid) {
+        setDetail(null);
+        go("/");
+      }
+      await refreshBase();
+      setToast({ tone: "success", message: `${project.name} deleted.` });
+    } catch (error) {
+      setToast({ tone: "error", message: String(error instanceof Error ? error.message : error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function reorderProjects(uuids: string[]) {
     const rank = new Map(uuids.map((uuid, index) => [uuid, index]));
     setProjects((current) => [...current].sort((a, b) => (rank.get(a.uuid) ?? current.length) - (rank.get(b.uuid) ?? current.length)));
@@ -1504,16 +1617,22 @@ export function App() {
           <>
             <ProjectSidebar
               projects={sidebarProjects}
+              total={projectsTotal}
+              query={projectQuery}
+              loading={projectLoading}
               selected={route.projectUuid}
               onNew={() => setModal("new-project")}
               onSelect={(uuid) => go(projectPath(uuid))}
+              onQuery={setProjectQuery}
+              onLoadMore={() => void loadProjectPage(true)}
               onUpdate={(project, body, message) => void updateProjectDisplay(project, body, message)}
+              onDeleteRequest={setDeleteProjectConfirm}
               onReorder={(uuids) => void reorderProjects(uuids)}
             />
             <main className="workspace">
-              {detail && selectedProject ? (
+              {detail && selectedProjectForDetail ? (
                 <ProjectDetailView
-                  project={selectedProject}
+                  project={selectedProjectForDetail}
                   detail={detail}
                   providers={providers}
                   daemons={daemons}
@@ -1541,10 +1660,10 @@ export function App() {
                   onUpdateRunTarget={(run, target) => void updateRunTarget(run, target)}
                   onOpenRunLog={openRunLog}
                 />
-              ) : projects.length ? (
+              ) : projects.length || projectsTotal > 0 || projectQuery.trim() ? (
                 <EmptyState
-                  title="Select a project"
-                  body="Pick a target from the project list, or create one when you have source, build root, and an execution profile ready."
+                  title={projectQuery.trim() && projects.length === 0 ? "No matching projects" : "Select a project"}
+                  body={projectQuery.trim() && projects.length === 0 ? "Clear or change the project search to pick a target." : "Pick a target from the project list, or create one when you have source, build root, and an execution profile ready."}
                   action={<Button variant="primary" icon="package" onClick={() => setModal("new-project")}>New project</Button>}
                 />
               ) : (
@@ -1585,8 +1704,12 @@ export function App() {
             providers={providers}
             daemons={daemons}
             archivedProjects={archivedProjects}
+            archivedTotal={archivedProjectsTotal}
+            archivedLoading={archivedProjectLoading}
             onRefresh={refreshBase}
             onUnarchive={(project) => void updateProjectDisplay(project, { archived: false }, `${project.name} restored.`)}
+            onDeleteRequest={setDeleteProjectConfirm}
+            onLoadMoreArchived={() => void loadArchivedProjectPage(true)}
           />
         ) : null}
       </div>
@@ -1649,6 +1772,14 @@ export function App() {
           }}
         />
       ) : null}
+      {deleteProjectConfirm ? (
+        <DeleteProjectConfirmModal
+          project={deleteProjectConfirm}
+          busy={busy}
+          onCancel={() => setDeleteProjectConfirm(null)}
+          onConfirm={() => void deleteProject(deleteProjectConfirm)}
+        />
+      ) : null}
       {toast ? <ToastView toast={toast} onClose={() => setToast(null)} /> : null}
     </>
   );
@@ -1698,24 +1829,35 @@ function MobileMenu({ route, running, theme, onClose, onTheme }: { route: RouteS
 
 function ProjectSidebar({
   projects,
+  total,
+  query,
+  loading,
   selected,
   onSelect,
   onNew,
+  onQuery,
+  onLoadMore,
   onUpdate,
+  onDeleteRequest,
   onReorder,
 }: {
   projects: ProjectSnapshot[];
+  total: number;
+  query: string;
+  loading: boolean;
   selected?: string;
   onSelect: (uuid: string) => void;
   onNew: () => void;
+  onQuery: (query: string) => void;
+  onLoadMore: () => void;
   onUpdate: (project: ProjectSnapshot, body: ProjectPayload, message: string) => void;
+  onDeleteRequest: (project: ProjectSnapshot) => void;
   onReorder: (uuids: string[]) => void;
 }) {
-  const [query, setQuery] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const filtered = projects.filter((project) => project.name.toLowerCase().includes(query.toLowerCase()));
-  const canReorder = !query.trim() && filtered.length > 1;
+  const visibleTotal = Math.max(total, projects.length);
+  const canReorder = !query.trim() && projects.length > 1 && projects.length >= visibleTotal;
   useEffect(() => {
     if (!openMenu) return undefined;
     const close = (event: MouseEvent) => {
@@ -1760,13 +1902,13 @@ function ProjectSidebar({
       <div className="rail-head">
         <div>
           <h2>Projects</h2>
-          <Counter>{projects.length}</Counter>
+          <Counter>{visibleTotal > projects.length ? `${projects.length}/${visibleTotal}` : visibleTotal}</Counter>
         </div>
         <Button variant={projects.length ? "primary" : undefined} icon="package" onClick={onNew}>New project</Button>
       </div>
-      <input className="searchbar" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter projects..." aria-label="Filter projects" />
+      <input className="searchbar" value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Search projects..." aria-label="Search projects" />
       <ul className="project-list" role="list">
-        {filtered.map((project) => (
+        {projects.map((project) => (
           <li
             key={project.uuid}
             onDragOver={(event) => {
@@ -1842,6 +1984,18 @@ function ProjectSidebar({
                         <Icon name="archive" size={14} />
                         <span>Archive project</span>
                       </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="danger"
+                        onClick={() => {
+                          setOpenMenu(null);
+                          onDeleteRequest(project);
+                        }}
+                      >
+                        <Icon name="trash" size={14} />
+                        <span>Delete project</span>
+                      </button>
                     </span>
                   ) : null}
                 </span>
@@ -1850,7 +2004,14 @@ function ProjectSidebar({
           </li>
         ))}
       </ul>
-      {filtered.length === 0 ? <div className="project-list-empty">No active projects match this filter.</div> : null}
+      {projects.length === 0 ? <div className="project-list-empty">{query.trim() ? "No active projects match this search." : "No active projects."}</div> : null}
+      {projects.length < visibleTotal ? (
+        <div className="project-rail-more">
+          <Button size="sm" icon="sync" onClick={onLoadMore} disabled={loading}>
+            {loading ? "Loading..." : `Load more (${visibleTotal - projects.length})`}
+          </Button>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -2081,7 +2242,7 @@ function ProjectDetailView(props: {
               title={runningRun ? "A run is already active for this project." : "Run the automatic pipeline: prepare if needed, map/dig, confirm, and report."}
               onClick={() => props.onLaunch("run")}
             >
-              {runningRun ? "Audit running" : hasPipelineRun ? "Continue" : "Run"}
+              {runningRun ? "Running" : hasPipelineRun ? "Continue" : "Run"}
             </Button>
             {runningRun ? <Button variant="danger" icon="x" onClick={() => props.onStopRun(runningRun)}>Stop run</Button> : null}
             <IconButton
@@ -3352,15 +3513,23 @@ function SettingsView({
   providers,
   daemons,
   archivedProjects,
+  archivedTotal,
+  archivedLoading,
   onRefresh,
   onUnarchive,
+  onDeleteRequest,
+  onLoadMoreArchived,
 }: {
   pane: SettingsPane;
   providers: ProviderProfile[];
   daemons: DaemonRow[];
   archivedProjects: ProjectSnapshot[];
+  archivedTotal: number;
+  archivedLoading: boolean;
   onRefresh: () => Promise<void>;
   onUnarchive: (project: ProjectSnapshot) => void;
+  onDeleteRequest: (project: ProjectSnapshot) => void;
+  onLoadMoreArchived: () => void;
 }) {
   return (
     <main className="settings-view">
@@ -3373,13 +3542,37 @@ function SettingsView({
       <section className="settings-content">
         {pane === "providers" ? <ProvidersPane providers={providers} onRefresh={onRefresh} /> : null}
         {pane === "daemons" ? <DaemonsPane daemons={daemons} onRefresh={onRefresh} /> : null}
-        {pane === "archived" ? <ArchivedProjectsPane projects={archivedProjects} onUnarchive={onUnarchive} /> : null}
+        {pane === "archived" ? (
+          <ArchivedProjectsPane
+            projects={archivedProjects}
+            total={archivedTotal}
+            loading={archivedLoading}
+            onUnarchive={onUnarchive}
+            onDeleteRequest={onDeleteRequest}
+            onLoadMore={onLoadMoreArchived}
+          />
+        ) : null}
       </section>
     </main>
   );
 }
 
-function ArchivedProjectsPane({ projects, onUnarchive }: { projects: ProjectSnapshot[]; onUnarchive: (project: ProjectSnapshot) => void }) {
+function ArchivedProjectsPane({
+  projects,
+  total,
+  loading,
+  onUnarchive,
+  onDeleteRequest,
+  onLoadMore,
+}: {
+  projects: ProjectSnapshot[];
+  total: number;
+  loading: boolean;
+  onUnarchive: (project: ProjectSnapshot) => void;
+  onDeleteRequest: (project: ProjectSnapshot) => void;
+  onLoadMore: () => void;
+}) {
+  const visibleTotal = Math.max(total, projects.length);
   return (
     <Card>
       <div className="pane-head">
@@ -3388,7 +3581,7 @@ function ArchivedProjectsPane({ projects, onUnarchive }: { projects: ProjectSnap
           <p>Archived projects are hidden from the project rail but keep their runs, scopes, findings, and reports.</p>
         </div>
         <div className="pane-actions">
-          <Counter>{projects.length}</Counter>
+          <Counter>{visibleTotal > projects.length ? `${projects.length}/${visibleTotal}` : visibleTotal}</Counter>
         </div>
       </div>
       {projects.length ? (
@@ -3402,9 +3595,19 @@ function ArchivedProjectsPane({ projects, onUnarchive }: { projects: ProjectSnap
                   {project.archived_at ? `Archived ${fmtTime(project.archived_at)}` : "Archived"} · {project.created_at ? `Created ${fmtTime(project.created_at)}` : "Created time unavailable"}
                 </small>
               </span>
-              <Button size="sm" icon="sync" onClick={() => onUnarchive(project)}>Unarchive</Button>
+              <span className="resource-actions">
+                <Button size="sm" icon="sync" onClick={() => onUnarchive(project)}>Unarchive</Button>
+                <Button size="sm" variant="danger" icon="trash" onClick={() => onDeleteRequest(project)}>Delete</Button>
+              </span>
             </div>
           ))}
+          {projects.length < visibleTotal ? (
+            <div className="resource-list-more">
+              <Button size="sm" icon="sync" onClick={onLoadMore} disabled={loading}>
+                {loading ? "Loading..." : `Load more (${visibleTotal - projects.length})`}
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <EmptyInline>No archived projects.</EmptyInline>
@@ -4311,6 +4514,27 @@ function StopRunConfirmModal({ run, busy, onCancel, onConfirm }: { run: RunRow; 
       <div className="confirm-copy">
         <strong>{label} run #{run.id} is active.</strong>
         <p>Progress already recorded will be kept, but the active daemon job will be interrupted. New audit work can be launched after the stop request completes.</p>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteProjectConfirmModal({ project, busy, onCancel, onConfirm }: { project: ProjectSnapshot; busy: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <Modal
+      title="Delete project?"
+      onClose={onCancel}
+      footer={(
+        <>
+          <Button onClick={onCancel} disabled={busy}>Cancel</Button>
+          <Button variant="danger" icon="trash" onClick={onConfirm} disabled={busy}>Delete project</Button>
+        </>
+      )}
+    >
+      <div className="confirm-copy">
+        <strong>{project.name} will be permanently deleted.</strong>
+        <p>This removes the project row and its runs, scopes, findings, and confirm decisions from Flounder. On-disk run artifacts are left untouched.</p>
+        <p>This confirmation is required for both active and archived projects.</p>
       </div>
     </Modal>
   );

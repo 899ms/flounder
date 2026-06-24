@@ -49,6 +49,9 @@ test("api: GET /api is a self-describing catalog of every resource + operation",
     assert.match(projectCreate.body.config, /prepareClue/);
     const projectList = cat.endpoints.find((e) => e.method === "GET" && e.path === "/api/projects");
     assert.match(projectList.query.archived, /archived projects/);
+    assert.match(projectList.query.limit, /default 100/);
+    assert.match(projectList.query.offset, /default 0/);
+    assert.match(projectList.query.q, /project-name search/);
     const projectOrder = cat.endpoints.find((e) => e.method === "PATCH" && e.path === "/api/projects/order");
     assert.match(projectOrder.summary, /drag-and-drop/);
     const projectRun = cat.endpoints.find((e) => e.method === "POST" && e.path === "/api/projects/:uuid/runs");
@@ -85,6 +88,7 @@ test("api: project list supports archive, unarchive, pin, and manual order", asy
     const json = (r) => r.json();
     const post = (p, body) => fetch(base + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const patch = (p, body) => fetch(base + p, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const deleteReq = (p) => fetch(base + p, { method: "DELETE" });
 
     const alpha = await json(await post("/api/projects", { name: "alpha", sourcePaths: ["./src"] }));
     const beta = await json(await post("/api/projects", { name: "beta", sourcePaths: ["./src"] }));
@@ -116,6 +120,32 @@ test("api: project list supports archive, unarchive, pin, and manual order", asy
     assert.deepEqual(list.projects.map((project) => project.name), ["alpha", "gamma", "beta"]);
     assert.deepEqual(list.projects.map((project) => project.sort_order), [0, 10, 20]);
 
+    await json(await post("/api/projects", { name: "delta", sourcePaths: ["./src"] }));
+    list = await json(await fetch(base + "/api/projects"));
+    assert.deepEqual(list.projects.map((project) => project.name), ["delta", "alpha", "gamma", "beta"]);
+    assert.deepEqual(list.projects.map((project) => project.sort_order), [-10, 0, 10, 20]);
+    assert.equal(list.total, 4);
+    assert.equal(list.limit, 100);
+    assert.equal(list.offset, 0);
+
+    const page = await json(await fetch(base + "/api/projects?limit=2&offset=1"));
+    assert.deepEqual(page.projects.map((project) => project.name), ["alpha", "gamma"]);
+    assert.equal(page.total, 4);
+    assert.equal(page.limit, 2);
+    assert.equal(page.offset, 1);
+
+    const search = await json(await fetch(base + "/api/projects?q=lph"));
+    assert.deepEqual(search.projects.map((project) => project.name), ["alpha"]);
+    assert.equal(search.total, 1);
+
+    archived = await json(await fetch(base + "/api/projects?archived=1"));
+    assert.deepEqual(archived.projects, []);
+
+    const archivedDelete = await json(await post("/api/projects", { name: "archived-delete", sourcePaths: ["./src"] }));
+    await patch(`/api/projects/${archivedDelete.uuid}`, { archived: true });
+    archived = await json(await fetch(base + "/api/projects?archived=1"));
+    assert.deepEqual(archived.projects.map((project) => project.name), ["archived-delete"]);
+    assert.equal((await deleteReq(`/api/projects/${archivedDelete.uuid}`)).status, 200);
     archived = await json(await fetch(base + "/api/projects?archived=1"));
     assert.deepEqual(archived.projects, []);
   });
