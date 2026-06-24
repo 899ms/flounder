@@ -1971,7 +1971,7 @@ function ProjectSidebar({
                         }}
                       >
                         <Icon name="pin" size={14} />
-                        <span>{project.pinned_at ? "Unpin project" : "Pin project"}</span>
+                        <span>{project.pinned_at ? "Unpin" : "Pin"}</span>
                       </button>
                       <button
                         type="button"
@@ -1982,7 +1982,7 @@ function ProjectSidebar({
                         }}
                       >
                         <Icon name="archive" size={14} />
-                        <span>Archive project</span>
+                        <span>Archive</span>
                       </button>
                       <button
                         type="button"
@@ -1994,7 +1994,7 @@ function ProjectSidebar({
                         }}
                       >
                         <Icon name="trash" size={14} />
-                        <span>Delete project</span>
+                        <span>Delete</span>
                       </button>
                     </span>
                   ) : null}
@@ -2244,7 +2244,7 @@ function ProjectDetailView(props: {
             >
               {runningRun ? "Running" : hasPipelineRun ? "Continue" : "Run"}
             </Button>
-            {runningRun ? <Button variant="danger" icon="x" onClick={() => props.onStopRun(runningRun)}>Stop run</Button> : null}
+            {runningRun ? <Button variant="danger" icon="x" onClick={() => props.onStopRun(runningRun)}>Stop</Button> : null}
             <IconButton
               icon="kebab"
               title={runningRun ? "Run settings" : "More actions"}
@@ -4534,7 +4534,6 @@ function DeleteProjectConfirmModal({ project, busy, onCancel, onConfirm }: { pro
       <div className="confirm-copy">
         <strong>{project.name} will be permanently deleted.</strong>
         <p>This removes the project row and its runs, scopes, findings, and confirm decisions from Flounder. On-disk run artifacts are left untouched.</p>
-        <p>This confirmation is required for both active and archived projects.</p>
       </div>
     </Modal>
   );
