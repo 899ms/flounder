@@ -40,6 +40,7 @@ const SOURCE_EXTS = new Set([
   ".move",
   ".cairo",
   ".vy",
+  ".clar",
   ".circom",
   ".sql",
   ".proto",
